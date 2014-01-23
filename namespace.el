@@ -105,6 +105,31 @@
 		    (_ (error "bug")))))
 	(puthash name qsym shadows)))))
 
+(defun namespace--shadowing-import (ns qsym)
+  (namespace--ct (namespace ns) (namespace--qsym qsym))
+  (let ((internal (namespace--internal ns))
+	(shadows (namespace--shadows ns))
+	(external (namespace--external ns))
+	(name (namespace--qsym-name qsym)))
+    (let* ((probe (namespace--find-name ns name)))
+      (pcase probe
+	(`nil
+	 (puthash name qsym internal))
+	((and (or `(:internal . ,qsym2)
+		  `(:external . ,qsym2))
+	      (guard (eq qsym2 qsym)))
+	 qsym2)
+	((or `(:internal . ,_qsym2)
+	     `(:external . ,_qsym2))
+	 (remhash name shadows)
+	 ;; FIXME: use namespace--unintern for warnings
+	 (remhash name internal)
+	 (remhash name external)
+	 (puthash name qsym internal))
+	(_
+	 (puthash name qsym internal)))
+      (puthash name qsym shadows))))
+
 (defun namespace--conflicts-to-string (conflicts)
   (cl-loop for (q1 . q2) in conflicts
 	   concat (format "%s %s\n"
@@ -308,6 +333,16 @@
     (list shadows shadowing-imports use imports interns exports)))
 
 
+
+;; almost like namespace--intern but warns about interning
+(defun namespace--find-or-make-qsym (ns name)
+  (let ((existing (namespace--find-name ns name)))
+    (cond (existing (cdr existing))
+	  (t
+	   (warn "Interning %s in namespace %s" name
+		 (namespace--name ns))
+	   (namespace--intern ns name)))))
+
 (defun namespace--add-shadows (ns shadows shadowing-imports)
   (let ((old-shadows (namespace--shadowing-qsyms ns)))
     (namespace--shadow ns shadows)

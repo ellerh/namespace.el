@@ -1,5 +1,6 @@
 
 (require 'namespace)
+(require 'ert)
 
 ;; (namespace--delete 'a)
 
@@ -32,7 +33,6 @@
     (funcall #'d (list 'b-f x)))
   )
 
-
 (define-namespace c
     ((:use a)
      (:shadow a c)
@@ -50,8 +50,8 @@
      (:shadowing-import-from c a)
      (:export b))
 
-    (defun b (x y)
-      (a x y))
+  (defun b (x y)
+    (a (list 'd-b x) y))
   )
 
 (ert-deftest namespace-test-a.0 ()
@@ -81,3 +81,5 @@
 (ert-deftest namespace-test-c.2 ()
   (should (equal (c--c 1) '(a--b (a-d (c--c 1))))))
 
+(ert-deftest namespace-test-d.1 ()
+  (should (equal (d-b 1 2) '(a--b (a-a 2 (c-a (d-b 1)))))))
