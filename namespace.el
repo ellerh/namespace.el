@@ -1,8 +1,8 @@
 ;;; -*- lexical-binding: t -*-
 
+(require 'cl-lib)
 (eval-when-compile
   (require 'pcase))
-(require 'cl-lib)
 
 ;; A bit of terminology:
 ;; qsym: a qualified symbol (a distinct type)
@@ -13,6 +13,7 @@
   (ns (error "Required argument missing") :type namespace :read-only t)
   (name (error "Required argument missing") :type string :read-only t))
 
+;(eval-and-compile ; <- see emacs bug #16520
 (cl-defstruct (namespace (:constructor namespace)
 			 (:predicate namespacep)
 			 (:copier nil)
@@ -30,10 +31,18 @@
   ;; these names are also in internal or external
   (shadows (make-hash-table :test 'equal) :type hash-table :read-only t)
   )
+;)
+
+(defmacro namespace--ct (&rest decls)
+  `(progn
+     ,@(cl-loop for decl in decls collect
+		(cl-destructuring-bind (type &rest names) decl
+		  `(progn
+		     ,@(cl-loop for name in names collect
+				`(cl-check-type ,name ,type)))))))
 
 (defun namespace--find-name (ns name)
-  (assert (stringp name))
-  (assert (namespacep ns))
+  (namespace--ct (namespace ns) (string name))
   (or (let ((sym (gethash name (namespace--internal ns) name)))
 	(and (not (eq sym name))
 	     (cons :internal sym)))
@@ -65,7 +74,7 @@
   (namespace--hash-values (namespace--external ns)))
 
 (defun namespace--accessible-qsyms (ns)
-  (assert (namespacep ns))
+  (namespace--ct (namespace ns))
   (let ((internal (namespace--internal ns))
 	(external (namespace--external ns)))
     (append (namespace--hash-values internal)
@@ -97,10 +106,10 @@
 	(puthash name qsym shadows)))))
 
 (defun namespace--conflicts-to-string (conflicts)
-  (loop for (q1 . q2) in conflicts
-	concat (format "%s %s\n"
-		       (namespace--qsym-to-csym q1)
-		       (namespace--qsym-to-csym q2))))
+  (cl-loop for (q1 . q2) in conflicts
+	   concat (format "%s %s\n"
+			  (namespace--qsym-to-csym q1)
+			  (namespace--qsym-to-csym q2))))
 
 (defun namespace--check-use-conflicts (ns ns2)
   (let ((conflicts '()))
@@ -155,7 +164,7 @@
 	     (push qsym imports))))))
     (when conflicts
       (error "Import into namespace %s causes conflict: %S"
-	     (namespace-name ns) conflicts))
+	     (namespace--name ns) conflicts))
     imports))
 
 (defun namespace--import (ns qsyms)
@@ -208,11 +217,11 @@
 (defvar namespace--table (make-hash-table))
 
 (defun namespace--find-namespace (name)
-  (assert (symbolp name))
+  (namespace--ct (symbol name))
   (gethash name namespace--table))
 
 (defun namespace--find-or-make-namespace (name)
-  (assert (symbolp name))
+  (namespace--ct (symbol name))
   (or (gethash name namespace--table)
       (setf (gethash name namespace--table)
 	    (namespace :name name))))
@@ -222,7 +231,7 @@
       (error "Namespace doesn't exist: %S" name)))
 
 (defun namespace--delete (name)
-  (assert (symbolp name))
+  (namespace--ct (symbol name))
   (remhash name namespace--table))
 
 
@@ -298,49 +307,69 @@
 		    append names)))
     (list shadows shadowing-imports use imports interns exports)))
 
+
+(defun namespace--add-shadows (ns shadows shadowing-imports)
+  (let ((old-shadows (namespace--shadowing-qsyms ns)))
+    (namespace--shadow ns shadows)
+    (dolist (name shadows)
+      (setq old-shadows (remove (namespace--find-name ns name) old-shadows)))
+    (cl-loop for (other-ns . names) in shadowing-imports do
+	     (let ((other-ns (namespace--find-namespace-or-lose other-ns)))
+	       (dolist (name names)
+		 (let ((qsym (namespace--find-or-make-qsym other-ns name)))
+		   (namespace--shadowing-import ns qsym)
+		   (setq old-shadows (remove qsym old-shadows))))))
+    (when old-shadows
+      (warn "Namespace %s also shadows the following symbols: %S"
+	    (namespace--name ns)
+	    (mapcar #'namespace--qsym-to-csym old-shadows)))))
+
+(defun namespace--add-use (ns use)
+  (let ((old-exporters (namespace--exporters ns))
+	(new-exporters (mapcar #'namespace--find-namespace-or-lose use)))
+    (namespace--use ns new-exporters)
+    (let ((unused (cl-set-difference old-exporters new-exporters)))
+      (when unused
+	(namespace--unuse ns unused)
+	(warn "Namespace %s previously used: %s"
+	      (namespace--name ns)
+	      (mapcar #'namespace--name unused))))))
+
+(defun namespace--find-qsym-or-lose (ns name)
+  (namespace--ct (namespace ns) (symbol name))
+  (let ((x (namespace--find-name ns (symbol-name name))))
+    (cond ((not x)
+	   (error "Name %s no accessible in %s" name (namespace--name ns)))
+	  (t
+	   (cdr x)))))
+
+(defun namespace--add-imports (ns imports)
+  (cl-loop for (other-ns . names) in imports do
+	   (let* ((other-ns (namespace--find-namespace-or-lose other-ns))
+		  (qsyms (mapcar (lambda (name)
+				   (namespace--find-qsym-or-lose other-ns
+								 name))
+				 names)))
+	     (namespace--import ns qsyms))))
+
+(defun namespace--add-exports (ns exports)
+  (let* ((old-exports (namespace--exported-qsyms ns))
+	 (new-exports (cl-loop for name in exports
+			       collect (namespace--intern ns name)))
+	 (diff (cl-set-difference old-exports new-exports)))
+    (namespace--export ns new-exports)
+    (when diff
+      (warn "Namspace %s also exports: %s" (namespace--name ns) diff))))
 
 (defun namespace--define (name shadows shadowing-imports use
 			       imports interns exports)
   (let* ((ns (namespace--find-or-make-namespace name)))
-    ;; shadows and shadowing-imports
-    (let ((old-shadows (namespace--shadowing-qsyms ns)))
-      (namespace--shadow ns shadows)
-      (dolist (name shadows)
-	(setq old-shadows (remove (namespace--find-name ns name) old-shadows)))
-      (cl-loop for (other-ns . names) in shadowing-imports do
-	       (let ((other-ns (namespace--find-namespace-or-lose other-ns)))
-		 (dolist (name names)
-		   (let ((qsym (namespace--find-or-make-qsym other-ns name)))
-		     (namespace--shadowing-import ns qsym)
-		     (setq old-shadows (remove qsym old-shadows))))))
-      (when old-shadows
-	(warn "Namespace %s also shadows the following symbols: %S"
-	      name (mapcar #'namespace--qsym-to-csym old-shadows))))
-    ;; use
-    (let ((old-exporters (namespace--exporters ns))
-	  (new-exporters (mapcar #'namespace--find-namespace-or-lose use)))
-      (namespace--use ns new-exporters)
-      (let ((unused (cl-set-difference old-exporters new-exporters)))
-	(when unused
-	  (namespace--unuse ns unused)
-	  (warn "Namespace %s previously used: %s"
-		name (mapcar #'namespace--name unused)))))
-    ;; intern
+    (namespace--add-shadows ns shadows shadowing-imports)
+    (namespace--add-use ns use)
     (dolist (name interns)
       (namespace--intern ns name))
-    ;; import
-    (cl-loop for (other-ns . names) in imports do
-	     (let ((other-ns (namespace--find-namespace-or-lose other-ns)))
-	       (dolist (name names)
-		 (namespace--import ns other-ns name))))
-    ;; export
-    (let* ((old-exports (namespace--exported-qsyms ns))
-	   (new-exports (cl-loop for name in exports
-				 collect (namespace--intern ns name)))
-	   (diff (cl-set-difference old-exports new-exports)))
-      (namespace--export ns new-exports)
-      (when diff
-	(warn "Namspace %s also exports: %s" name diff)))
+    (namespace--add-imports ns imports)
+    (namespace--add-exports ns exports)
     name))
 
 (defmacro define-namespace (name options &rest body)
@@ -363,7 +392,7 @@
 ;;     b)))
 
 (defun namespace-resolve (ns name)
-  (assert (namespacep ns)) (cl-check-type name string)
+  (namespace--ct (namespace ns) (string name))
   (let ((nsname (namespace--name ns)))
     (pcase (namespace--find-name ns name)
       ((or `nil
@@ -376,7 +405,7 @@
        (namespace--symconc nsname '- name))
       (`(,_ . ,qsym)
        (let ((ns2 (namespace--qsym-ns qsym)))
-	 (assert (not (eq ns2 ns)))
+	 (cl-assert (not (eq ns2 ns)))
 	 (namespace-resolve ns2 name)))
       (_ (error "bug")))))
 

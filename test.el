@@ -45,6 +45,15 @@
     (funcall #'d (list 'c--c x)))
   )
 
+(define-namespace d
+    ((:use a)
+     (:shadowing-import-from c a)
+     (:export b))
+
+    (defun b (x y)
+      (a x y))
+  )
+
 (ert-deftest namespace-test-a.0 ()
   (should (equal (a-a 1 2) '(a--b (a-a 2 1)))))
 
