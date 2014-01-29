@@ -616,11 +616,14 @@
 	     (rn (namespace-resolve ns (symbol-name cn))))
 	(push (cons cn rn) fs)
 	(when (namespace--name-external-p ns (symbol-name cn))
-	  (push `(defalias ',rn
-		   ',(namespace--symconc (namespace--name ns)
-					 '--
-					 (symbol-name cn)))
-		aliases))))
+	  (let ((in (namespace--symconc (namespace--name ns)
+					'--
+					(symbol-name cn))))
+	    (push `(defalias ',rn ',in) aliases)
+	    (push `(gv-define-setter ,rn (value struct)
+		     `(setf (,',in ,struct) ,value))
+		  aliases)
+	    ))))
     (list fs aliases)))
 
 (defun namespace--defstruct-like (env form)

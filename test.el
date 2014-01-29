@@ -54,7 +54,6 @@
     (a (list 'd-b x) y))
   )
 
-
 (define-namespace e
     ((:export make-a
 	      a-x
@@ -84,6 +83,22 @@
 
   (cl-defstruct (c (:predicate c?))
     x)
+
+  )
+
+(define-namespace g
+    ((:use e)
+     (:export a b d))
+
+  (defun a ()
+    (make-a :x 123 :y 456))
+
+  (defun b (a)
+    (a-x a))
+
+  (defun d (a x)
+    (setf (a-x a) x)
+    a)
 
   )
 
@@ -165,3 +180,13 @@
 
 (ert-deftest test-f.5 ()
   (should (cl-typep (f-make-a :x 234) 'f--a)))
+
+(ert-deftest test-g.1 ()
+  (should (e--a-p (g-a))))
+
+(ert-deftest test-g.2 ()
+  (should (equal (g-b (g-a)) 123)))
+
+(ert-deftest test-g.3 ()
+  (should (equal (e-a-x (g-d (g-a) 789))
+		 789)))
