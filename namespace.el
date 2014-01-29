@@ -13,7 +13,6 @@
   (ns (error "Required argument missing") :type namespace :read-only t)
   (name (error "Required argument missing") :type string :read-only t))
 
-;(eval-and-compile ; <- see emacs bug #16520
 (cl-defstruct (namespace (:constructor namespace)
 			 (:predicate namespacep)
 			 (:copier nil)
@@ -31,7 +30,6 @@
   ;; these names are also in internal or external
   (shadows (make-hash-table :test 'equal) :type hash-table :read-only t)
   )
-;)
 
 (defmacro namespace--ct (&rest decls)
   `(progn
@@ -448,11 +446,6 @@
   (namespace-resolve (namespace--qsym-ns qsym)
 		     (namespace--qsym-name qsym)))
 
-(defvar namespace--defun-like
-  '(defun defun* cl-defun
-     defmacro defmacro*  cl-defmacro
-     define-compiler-macro cl-define-compiler-macro))
-
 (defvar namespace--rewriters (make-hash-table))
 
 (cl-defmacro namespace-define-rewriter (name (env form) &body body)
@@ -484,18 +477,15 @@
     (while (not (null forms))
       (let ((form (pop forms)))
 	(pcase form
-	  ((and `(,op ,sym . ,rest)
-		(guard (member op namespace--defun-like)))
-	   (let ((csym (namespace-resolve ns (symbol-name sym))))
-	     (push `(,op ,csym . ,rest) rbody)
-	     (push (cons sym csym) (cdr fsyms))))
 	  ((and `(,op . ,_)
 		(let rewrite (gethash op namespace--rewriters))
 		(guard rewrite))
 	   op
-	   (cl-destructuring-bind (fss rform) (funcall rewrite env form)
+	   (cl-destructuring-bind (fss rform recursep)
+	       (funcall rewrite env form)
 	     (setcdr fsyms (append fss (cdr fsyms)))
-	     (push rform rbody)))
+	     (cond (recursep (push rform forms))
+		   (t (push rform rbody)))))
 	  (`(progn . ,rest)
 	   (setq forms (append rest forms)))
 	  ((and `(,_ . ,_)
@@ -537,7 +527,132 @@
 	 . ,body))))
 
 
+(defun namespace--defun-like (env form)
+  (let ((ns (funcall (cdr (assoc 'namespace--ns env)))))
+    (pcase form
+      (`(,op ,sym . ,rest)
+       (let ((csym (namespace-resolve ns (symbol-name sym))))
+	 (list `((,sym . ,csym))
+	       `(,op ,csym . ,rest)
+	       nil))))))
+
+(defmacro namespace--define-defun-like (&rest names)
+  `(progn
+     ,@(cl-loop for name in names collect
+		`(namespace-define-rewriter ,name (env form)
+		   (namespace--defun-like env form)))))
+
+(namespace--define-defun-like
+ defun defun* cl-defun
+ defmacro defmacro*  cl-defmacro
+ define-compiler-macro cl-define-compiler-macro)
+
+
+;; Dealing with defstruct is fairly tricky.  The basic idea is to
+;; translate
+;;
+;;   (defstruct foo x)
+;;
+;; to
+;;
+;;   (defstruct (ns--foo (:constructor ns--make-foo)
+;;			 (:predicate ns--foo-p)
+;;			 (:copier ns--copy-foo))
+;;     x)
+;;
+;; and if needed, i.e. if the foo-x is exported:
+;;
+;;   (defalias 'ns-foo-x 'ns--foo-x)
+;;
+;; If the type name, foo, is exported we also declare a type alias:
+;;
+;;   (deftype ns-foo () 'ns--foo)
+;;
+;; However, the type machinery of cl-lib seems to be too buggy/limited
+;; to make this work in all cases.  Also deftype is not lexically
+;; scoped and we can't use the same macrolet tricks as for functions;
+;; therefore type names must always be fully qualified.
+
+(defun namespace--defstruct-options (ns options name)
+  (let* ((string (symbol-name name))
+	 (fs '())
+	 (opts '())
+	 (options
+	  (append options
+		  (unless (assoc :constructor options)
+		    `((:constructor ,(namespace--symconc 'make '- string))))
+		  (unless (assoc ':predicate options)
+		    `((:predicate ,(namespace--symconc name '- "p"))))
+		  (unless (assoc :copier options)
+		    `((:copier ,(namespace--symconc 'copy '- string)))))))
+    (while options
+      (pcase (pop options)
+	((and `(,op ,name . ,args)
+	      (guard (memq op '(:constructor :predicate :copier)))
+	      (guard (and (symbolp name) (not (eq name nil)))))
+	 (let ((rname (namespace-resolve ns (symbol-name name))))
+	   (push (cons name rname) fs)
+	   (push `(,op ,rname . ,args) opts)))
+	(`(:conc-name ,prefix)
+	 (let ((rname (namespace-resolve ns (symbol-name prefix))))
+	   (push `(:conc-name ,rname) opts)))
+	(o (push o opts))))
+    (list fs opts)))
+
+(defun namespace--name-external-p (ns name)
+  (pcase (namespace--find-name ns name)
+    (`(:external . ,_) t)))
+
+(defun namespace--slot-aliases (ns slots name options)
+  (let ((fs '())
+	(aliases '())
+	(conc-name (or (cadr (assoc :conc-name options))
+		       (namespace--symconc name '- ""))))
+    (dolist (slot slots)
+      (let* ((n (pcase slot
+		  (`(,n . ,_) n)
+		  ((and n (guard (symbolp n))) n)))
+	     (cn (intern (concat (symbol-name conc-name) (symbol-name n))))
+	     (rn (namespace-resolve ns (symbol-name cn))))
+	(push (cons cn rn) fs)
+	(when (namespace--name-external-p ns (symbol-name cn))
+	  (push `(defalias ',rn
+		   ',(namespace--symconc (namespace--name ns)
+					 '--
+					 (symbol-name cn)))
+		aliases))))
+    (list fs aliases)))
+
+(defun namespace--defstruct-like (env form)
+  (pcase-let* ((`(,name ,options ,slots)
+		(pcase form
+		  ((and `(,_ ,name . ,slots) (guard (symbolp name)))
+		   (list name '() slots))
+		  ((and `(,_ (,name . ,options) . ,slots))
+		   (list name options slots))
+		  (_ (error "syntax error in defstruct: %S" form))))
+	       (ns (funcall (cdr (assoc 'namespace--ns env))))
+	       (string (symbol-name name))
+	       (nsname (namespace--name ns))
+	       (tname (namespace--symconc nsname '-- string))
+	       (extern (eq (car (namespace--find-name ns string))
+			   :external))
+	       (`(,fs1 ,options2) (namespace--defstruct-options
+				   ns options name))
+	       (`(,fs2 ,aliases) (namespace--slot-aliases ns slots
+							  name options))
+	       (def `(progn
+		       (cl-defstruct (,tname . ,options2) . ,slots)
+		       ,@(when extern
+			   `((cl-deftype ,(namespace--symconc nsname '- string)
+					 () ',tname)))
+		       . ,aliases)))
+    (list (append fs1 fs2) def nil)))
+
 (namespace-define-rewriter defstruct (env form)
-  (list '() form))
+  (namespace--defstruct-like env form))
+
+(namespace-define-rewriter cl-defstruct (env form)
+  (namespace--defstruct-like env form))
 
 (provide 'namespace)

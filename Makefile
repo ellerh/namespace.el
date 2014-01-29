@@ -1,3 +1,4 @@
+#
 
 all: namespace.elc
 
@@ -9,4 +10,4 @@ check: namespace.elc test.elc
 	emacs --batch -L . -l test.elc -f ert-run-tests-batch-and-exit
 
 clean:
-	find . -name '*.elc' -exec rm -v {} \;
+	find . -maxdepth 1 -name '*.elc' -exec rm {} \;
