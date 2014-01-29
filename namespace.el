@@ -514,16 +514,36 @@
 		 (setcdr cache form)
 		 form))))))
 
+;;(cl-defmacro namespace--macrolet (fsyms &body body)
+;;  (declare (indent 1))
+;;  `(cl-macrolet ((namespace--fsyms () ',fsyms)
+;;		 (namespace--fcache () ',(cons nil nil))
+;;		 (function (sym &environment env)
+;;			   (namespace--function-expander sym env))
+;;		 ,@(cl-loop for (sym . csym) in fsyms
+;;			    collect `(,sym (&rest args)
+;;					   `(,',csym . ,args))))
+;;     . ,body))
+
+(cl-defmacro namespace--macrolet (fsyms &body body &environment env)
+  (declare (indent 1))
+  (let ((env2 (append
+	       `((namespace--fsyms . (lambda () ',fsyms))
+		 (namespace--fcache . (lambda () ',(cons nil nil)))
+		 (function . (lambda (sym)
+			       (let ((env macroexpand-all-environment))
+				 (namespace--function-expander sym env))))
+		 ,@(cl-loop for (sym . csym) in fsyms
+			    collect `(,sym . (lambda (&rest args)
+					       `(,',csym . ,args)))))
+	       env)))
+    (macroexpand-all `(progn . ,body) env2)))
+
 (cl-defmacro namespace--progn (namespace &body body &environment env)
+  (declare (indent 1))
   (let ((ns (namespace--find-namespace-or-lose namespace)))
     (cl-destructuring-bind (fsyms body) (namespace--walk-toplevel ns env body)
-      `(cl-macrolet ((namespace--fsyms () ',fsyms)
-		     (namespace--fcache () ',(cons nil nil))
-		     (function (sym &environment env)
-			       (namespace--function-expander sym env))
-		     ,@(cl-loop for (sym . csym) in fsyms
-				collect `(,sym (&rest args)
-					       `(,',csym . ,args))))
+      `(namespace--macrolet ,fsyms
 	 . ,body))))
 
 

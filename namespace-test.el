@@ -3,6 +3,7 @@
 (require 'namespace)
 (require 'ert)
 (require 'cl-lib)
+(require 'cl-ns)
 
 (define-namespace a
     ((:use )
@@ -102,6 +103,26 @@
 
   )
 
+(define-namespace h
+    ((:use cl)
+     (:export a b c d))
+
+  (defun a ()
+    (loop for x across [0 1 2 3 4]
+	  collect x))
+
+  (defun b (x)
+    (caddr x))
+
+  (defun c (l)
+    (destructuring-bind (x y) l
+      (cons y x)))
+
+  (defun d (x l)
+    (position x l))
+
+  )
+
 (ert-deftest test-a.0 ()
   (should (equal (a-a 1 2) '(a--b (a-a 2 1)))))
 
@@ -190,3 +211,18 @@
 (ert-deftest test-g.3 ()
   (should (equal (e-a-x (g-d (g-a) 789))
 		 789)))
+
+(ert-deftest test-h.1 ()
+  (should (equal (h-a) '(0 1 2 3 4))))
+
+(ert-deftest test-h.2 ()
+  (should (equal (h-b '(0 1 2 3 4))
+		 2)))
+
+(ert-deftest test-h.3 ()
+  (should (equal (h-c '(0 1))
+		 '(1 . 0))))
+
+(ert-deftest test-h.4 ()
+  (should (equal (h-d 2 '(0 1 2 3))
+		 2)))
