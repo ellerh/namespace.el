@@ -1,0 +1,93 @@
+* Introduction
+
+The purpose of namespace.el is to manage function names in Emacs Lisp
+code.  The idea is to automate the Emacs convention of prefixing each
+function name with the name of the package.
+
+* Example
+
+#+BEGIN_SRC
+ (require 'namespace)
+
+ (define-namespace foo
+     ((:export f))
+
+   (defun f (i) (g i))
+   (defun g (i) (message "g called: %s" i)))
+
+ (define-namespace bar
+     ((:use foo)
+      (:export h))
+
+   (defun h () (f 42)))
+
+ (bar-h)
+ (foo--g 456)
+#+END_SRC
+
+The example defines two namespaces: foo and bar.  The namespace foo
+exports the symbol f.  Inside the namespace foo we define two
+functions: f and g.  The function f just calls g and g prints a
+message.
+
+The namespace bar uses the namespace foo and also exports the symbol
+h.  Inside bar we define the function h which calls the function f.
+The symbol f is "accessible" in namespace bar because f is exported
+from namespace foo and bar uses foo.
+
+Outside of any namespace we can call exported functions in the usual
+way by prefixing the function name with the name of the namespace,
+e.g. (bar-h) calls the function h in namespace bar.  Similary
+(foo-f 123) calls the function f in namespace foo.  Non-exported
+functions can be called by prefixing the function name with the
+namespace name and two hyphens, e.g. (foo--g 456).
+
+* Installation
+
+Execute "make install" in the shell. That creates a ELPA package and
+installs it, typically in ~/.emacs.d/elpa/namespace-X/. To uninstall
+it use "make uninstall".
+
+* Exporting and importing symbols
+
+The options of the define-namespace form: :export, :use, :import,
+:shadow, :shadowing-import-from specify which symbols are accessible
+and exported from a namespace.
+
+If you are familiar with Common Lisp you should feel right at home.
+If your background is in Python or Ruby then be warned that the
+terminolgy here is quite different from what you are used to.
+
+ [describe options]
+
+* How it works
+
+The define-namespace macro rewrites the toplevel forms (and only the
+toplevel forms) and inserts prefixes as needed.  Basically the
+expansion of the foo namespace in the above example looks like so:
+
+#+BEGIN_SRC
+  (macrolet ((f (&rest args) `(foo-f . ,args))
+             (g (&rest args) `(foo--g . ,args)))
+   (defun foo-f (i) (g i))
+   (defun foo--g (i) (message "g called: %s" i)))
+#+END_SRC
+
+Since we only deal with toplevel forms and only with function names
+(no variable or type names) this rewriting is a relatively easy task
+and I hope it's not too hard to understand.
+
+** defun
+
+ [describe how defun works]
+
+** defstruct
+
+ [describe how defstruct works]
+
+* Limitations
+
++ namespace.el is still experimental and not yet ready for serious use.
+
++ A general problem is that M-. and grepping for names will be more
+  difficult when namespaces are used.

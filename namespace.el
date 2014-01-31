@@ -1,4 +1,26 @@
-;;; -*- lexical-binding: t -*-
+;;; namespace.el --- Namespaces as macro             -*- lexical-binding: t -*-
+
+;; Copyright (C) 2014 Helmut Eller
+
+;; Author: Helmut Eller <eller.helmut@gmail.com>
+;; Version: 0.1
+
+;; This file is free software: you can redistribute it and/or modify
+;; it under the terms of the GNU General Public License as published by
+;; the Free Software Foundation, either version 3 of the License, or
+;; (at your option) any later version.
+
+;; This file is distributed in the hope that it will be useful,
+;; but WITHOUT ANY WARRANTY; without even the implied warranty of
+;; MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+;; GNU General Public License for more details.
+
+;; You should have received a copy of the GNU General Public License
+;; along with GNU Emacs.  If not, see <http://www.gnu.org/licenses/>.
+
+;;; Commentary:
+
+;;; Code:
 
 (require 'cl-lib)
 (eval-when-compile
@@ -27,7 +49,7 @@
   ;; string -> qsym
   (external (make-hash-table :test 'equal) :type hash-table :read-only t)
   ;; string -> qsym
-  ;; these names are also in internal or external
+  ;; these names are also in either in internal or external.
   (shadows (make-hash-table :test 'equal) :type hash-table :read-only t)
   )
 
@@ -525,6 +547,11 @@
 ;;					   `(,',csym . ,args))))
 ;;     . ,body))
 
+
+;; This does the same as te abore macro but more efficiently.  The
+;; above version creates lots of macrolets which will be expanded in a
+;; recursive fashion that can overfow the stack quickly.  This version
+;; is uses the stack space more efficiently.
 (cl-defmacro namespace--macrolet (fsyms &body body &environment env)
   (declare (indent 1))
   (let ((env2 (append
@@ -547,6 +574,9 @@
 	 . ,body))))
 
 
+;;; defun and friends
+;;
+
 (defun namespace--defun-like (env form)
   (let ((ns (funcall (cdr (assoc 'namespace--ns env)))))
     (pcase form
@@ -568,6 +598,8 @@
  define-compiler-macro cl-define-compiler-macro)
 
 
+;;; defstruct
+;;
 ;; Dealing with defstruct is fairly tricky.  The basic idea is to
 ;; translate
 ;;
@@ -580,7 +612,7 @@
 ;;			 (:copier ns--copy-foo))
 ;;     x)
 ;;
-;; and if needed, i.e. if the foo-x is exported:
+;; and if needed, i.e. if foo-x is exported:
 ;;
 ;;   (defalias 'ns-foo-x 'ns--foo-x)
 ;;
@@ -590,7 +622,7 @@
 ;;
 ;; However, the type machinery of cl-lib seems to be too buggy/limited
 ;; to make this work in all cases.  Also deftype is not lexically
-;; scoped and we can't use the same macrolet tricks as for functions;
+;; scoped and we can't use the macrolet tricks as for functions;
 ;; therefore type names must always be fully qualified.
 
 (defun namespace--defstruct-options (ns options name)
@@ -679,3 +711,5 @@
   (namespace--defstruct-like env form))
 
 (provide 'namespace)
+
+;; namespace.el ends here
