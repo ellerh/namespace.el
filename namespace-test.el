@@ -126,7 +126,7 @@
 
 (define-namespace h
     ((:use cl)
-     (:export a b c d e))
+     (:export a b c d e f))
 
   (defun a ()
     (loop for x across [0 1 2 3 4]
@@ -147,6 +147,13 @@
       (dolist (x l)
 	(push x r)
 	(when (equal x 3)
+	  (return r)))))
+
+  (defun f (n)
+    (let ((r 0))
+      (dotimes (i n)
+	(incf r i)
+	(when (equal i 3)
 	  (return r)))))
 
   )
@@ -259,5 +266,7 @@
   (should (equal (h-e '(0 1 2 3 4 5))
 		 '(3 2 1 0))))
 
+(ert-deftest test-h.6 ()
+  (should (equal (h-f 7) 6)))
 
 ;;; namespace-test.el ends here
