@@ -50,7 +50,7 @@ it use "make uninstall".
 
 * Exporting and importing symbols
 
-The options of the define-namespace form: :export, :use, :import,
+The options of the define-namespace form: :export, :use, :import-from,
 :shadow, :shadowing-import-from specify which symbols are accessible
 and exported from a namespace.
 
