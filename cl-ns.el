@@ -27,8 +27,25 @@
 (require 'cl-lib)
 (require 'namespace)
 
+(define-namespace cl-ns-aux
+    ((:export dolist dotimes))
+
+  ;; cl-dolist is defined in terms of dolist and that would lead to
+  ;; endless recursions.  Fix that my using namespace-global.  Real
+  ;; Common Lisp also inserts a TAGBODY around the body, but cl-dolist
+  ;; apparently does not.
+
+  (defmacro dolist (spec &rest body)
+    `(cl-block nil (namespace-global (dolist ,spec . ,body))))
+
+  (defmacro dotimes (spec &rest body)
+    `(cl-block nil (namespace-global (dotimes ,spec . ,body))))
+
+  )
+
 (define-namespace cl
-    ((:export
+    ((:use cl-ns-aux)
+     (:export
       labels
       flet
 
@@ -134,8 +151,6 @@
       psetq
       do-all-symbols
       do-symbols
-      dotimes
-      dolist
       do*
       do
       loop

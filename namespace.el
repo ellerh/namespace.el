@@ -354,7 +354,7 @@
 
 
 
-;; almost like namespace--intern but warns about interning
+;; like namespace--intern but warns about interning
 (defun namespace--find-or-make-qsym (ns name)
   (let ((existing (namespace--find-name ns name)))
     (cond (existing (cdr existing))
@@ -519,10 +519,9 @@
     (list (cdr fsyms)
 	  (reverse rbody))))
 
-;; This similar to cl--labels-convert both are hacks to shadow the
-;; (function X) special form.  This exploits the fact that
-;; macroexpand stops macroexpanding when an expander returns the
-;; same form twice.
+;; This similar is to cl--labels-convert; both are hacks to shadow the
+;; (function X) special form.  This exploits the fact that macroexpand
+;; stops macroexpanding when an expander returns the same form twice.
 (defun namespace--function-expander (sym env)
   (or (let* ((fsyms (macroexpand '(namespace--fsyms) env))
 	     (probe (assoc sym fsyms)))
@@ -548,10 +547,10 @@
 ;;     . ,body))
 
 
-;; This does the same as te abore macro but more efficiently.  The
+;; This does the same as te above macro but more efficiently.  The
 ;; above version creates lots of macrolets which will be expanded in a
 ;; recursive fashion that can overfow the stack quickly.  This version
-;; is uses the stack space more efficiently.
+;; uses the stack space more efficiently.
 (cl-defmacro namespace--macrolet (fsyms &body body &environment env)
   (declare (indent 1))
   (let ((env2 (append
@@ -709,6 +708,17 @@
 
 (namespace-define-rewriter cl-defstruct (env form)
   (namespace--defstruct-like env form))
+
+
+(defun namespace--macro-function (name)
+  (pcase (symbol-function name)
+    (`(macro . ,fun) fun)
+    (_ nil)))
+
+(cl-defmacro namespace-global ((name &rest args))
+  (let ((fun (or (namespace--macro-function name)
+		 (error "Not a global macro: %s" name))))
+    (apply fun args)))
 
 (provide 'namespace)
 
