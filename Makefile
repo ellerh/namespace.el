@@ -25,7 +25,7 @@ install    -- install ELPA package\n\
 uninstall  -- uninstall ELPA package\n\
 help       -- print this message"
 
-all: namespace.elc cl-ns.elc
+all: namespace.elc cl-ns.elc namespace-srcloc.elc
 
 %.elc: %.el
 	emacs --batch -L . -f batch-byte-compile $<

@@ -261,7 +261,7 @@
 ;; symbol -> namespace
 (defvar namespace--table (make-hash-table))
 
-(defun namespace--find-namespace (name)
+(defun namespace-find-namespace (name)
   (namespace--ct (symbol name))
   (gethash name namespace--table))
 
@@ -272,7 +272,7 @@
 	    (namespace :name name))))
 
 (defun namespace--find-namespace-or-lose (name)
-  (or (namespace--find-namespace name)
+  (or (namespace-find-namespace name)
       (error "Namespace doesn't exist: %S" name)))
 
 (defun namespace--delete (name)
