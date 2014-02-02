@@ -119,6 +119,8 @@
 
   )
 
+;;;###autoload(autoload 'namespace-srcloc-find-definition "namespace-srcloc")
+
 (provide 'namespace-srcloc)
 
 ;; namespace-srcloc.el ends here

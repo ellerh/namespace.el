@@ -41,7 +41,8 @@ clean:
 	  -regex '.*\(\.elc\|\.tar\|-pkg\.el\)$$' \
 	  -exec rm -v {} \;
 
-PKGFILES := namespace-pkg.el namespace.el cl-ns.el namespace-test.el README.org
+PKGFILES := namespace-pkg.el namespace.el cl-ns.el \
+namespace-srcloc.el namespace-test.el README.org
 
 VERSION = $(shell awk '/^;; Version: [0-9.]+/ { print $$3 }' namespace.el)
 
