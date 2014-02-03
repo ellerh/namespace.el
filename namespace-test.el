@@ -173,6 +173,11 @@
 (ert-deftest test-a.4 ()
   (should (equal (a-d 1) '(a--b (a-d 1)))))
 
+(ert-deftest test-a.5 ()
+  (should (equal (namespace-eval-in-namespace (namespace-find-namespace 'a)
+					      '(b 42))
+		 '(a--b 42))))
+
 (ert-deftest test-b.1 ()
   (should (equal (b-e 1 2) '(a--b (a-a 2 (b-e 1))))))
 

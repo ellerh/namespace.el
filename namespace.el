@@ -416,9 +416,13 @@
     (when diff
       (warn "Namspace %s also exports: %s" (namespace--name ns) diff))))
 
+;; FIXME: clearing out internal symbols is probably a good idea but
+;; conflict dections may need updjustments.
 (defun namespace--define (name shadows shadowing-imports use
 			       imports interns exports)
   (let* ((ns (namespace--find-or-make-namespace name)))
+    (clrhash (namespace--internal ns))
+    (clrhash (namespace--shadows ns))
     (namespace--add-shadows ns shadows shadowing-imports)
     (namespace--add-use ns use)
     (dolist (name interns)
@@ -439,34 +443,28 @@
        (namespace--progn ,name . ,body))))
 
 
-
+;;;; warning about unused a seems like bug
 ;;(defun foo (x)
 ;;  (pcase x
 ;;    ((and `(,a ,b)
 ;;	  (guard (symbolp a)))
 ;;     b)))
 
-(defun namespace-resolve (ns name)
-  (namespace--ct (namespace ns) (string name))
-  (let ((nsname (namespace--name ns)))
-    (pcase (namespace--find-name ns name)
-      ((or `nil
-	   (and `(:internal . ,qsym)
-		(guard (eq (namespace--qsym-ns qsym) ns))))
-       (namespace--symconc nsname '-- name))
-      ((and `(:external . ,qsym)
-	    (guard (eq (namespace--qsym-ns qsym) ns)))
-       qsym
-       (namespace--symconc nsname '- name))
-      (`(,_ . ,qsym)
-       (let ((ns2 (namespace--qsym-ns qsym)))
-	 (cl-assert (not (eq ns2 ns)))
-	 (namespace-resolve ns2 name)))
-      (_ (error "bug")))))
+(defun namespace--name-external-p (ns name)
+  (pcase (namespace--find-name ns name)
+    (`(:external . ,_) t)))
 
 (defun namespace--qsym-to-csym (qsym)
-  (namespace-resolve (namespace--qsym-ns qsym)
-		     (namespace--qsym-name qsym)))
+  (let* ((name (namespace--qsym-name qsym))
+	 (ns (namespace--qsym-ns qsym))
+	 (nsname (namespace--name ns)))
+    (namespace--symconc nsname
+			(if (namespace--name-external-p ns name) '- '--)
+			name)))
+
+(defun namespace-resolve (ns name)
+  (namespace--ct (namespace ns) (string name))
+  (namespace--qsym-to-csym (namespace--intern ns name)))
 
 (defvar namespace--rewriters (make-hash-table))
 
@@ -485,10 +483,10 @@
 (defun namespace--fsyms (ns)
   (cl-loop for qsym in (namespace--accessible-qsyms ns)
 	   collect (cons (intern (namespace--qsym-name qsym))
-			 (namespace--qsym-to-csym qsym))))
+			 qsym)))
 
 ;; Expand and rewrite FORMS.
-;; Return (FSYMS BODY) where FSYMS is an alist (SYMBOL . CSYM).
+;; Return (FSYMS BODY) where FSYMS is an alist (SYMBOL . QSYM).
 ;;
 ;; FIXME: remove duplicates in FSYMS
 (defun namespace--walk-toplevel (ns env forms)
@@ -518,6 +516,20 @@
 	   (push form rbody)))))
     (list (cdr fsyms)
 	  (reverse rbody))))
+
+(defun namespace--add-internal (namespace names)
+  (let ((ns (namespace--find-namespace-or-lose namespace)))
+    (dolist (name names)
+      (namespace--intern ns name))))
+
+(defun namespace--internal-fsyms (ns fsyms)
+  (cl-loop for (nil . qsym) in fsyms
+	   when (let ((name (namespace--qsym-name qsym))
+		      (ns2 (namespace--qsym-ns qsym)))
+		  (and (eq ns2 ns)
+		       (not (namespace--name-external-p ns name))
+		       name))
+	   collect it))
 
 ;; This similar is to cl--labels-convert; both are hacks to shadow the
 ;; (function X) special form.  This exploits the fact that macroexpand
@@ -565,12 +577,19 @@
 	       env)))
     (macroexpand-all `(progn . ,body) env2)))
 
+(defun namespace--fsyms-to-csyms (fsyms)
+  (cl-loop for (sym . qsym) in fsyms
+	   collect (cons sym (namespace--qsym-to-csym qsym))))
+
 (cl-defmacro namespace--progn (namespace &body body &environment env)
   (declare (indent 1))
   (let ((ns (namespace--find-namespace-or-lose namespace)))
     (cl-destructuring-bind (fsyms body) (namespace--walk-toplevel ns env body)
-      `(namespace--macrolet ,fsyms
-	 . ,body))))
+      `(progn
+	 (namespace--add-internal ',namespace
+				  ',(namespace--internal-fsyms ns fsyms))
+	 (namespace--macrolet ,(namespace--fsyms-to-csyms fsyms)
+	   . ,body)))))
 
 
 ;;; defun and friends
@@ -580,8 +599,9 @@
   (let ((ns (funcall (cdr (assoc 'namespace--ns env)))))
     (pcase form
       (`(,op ,sym . ,rest)
-       (let ((csym (namespace-resolve ns (symbol-name sym))))
-	 (list `((,sym . ,csym))
+       (let* ((qsym (namespace--intern ns (symbol-name sym)))
+	      (csym (namespace--qsym-to-csym qsym)))
+	 (list `((,sym . ,qsym))
 	       `(,op ,csym . ,rest)
 	       nil))))))
 
@@ -619,10 +639,9 @@
 ;;
 ;;   (deftype ns-foo () 'ns--foo)
 ;;
-;; However, the type machinery of cl-lib seems to be too buggy/limited
-;; to make this work in all cases.  Also deftype is not lexically
-;; scoped and we can't use the macrolet tricks as for functions;
-;; therefore type names must always be fully qualified.
+;; deftype is not lexically scoped and we can't use the macrolet
+;; tricks as for functions; therefore type names must always be fully
+;; qualified.
 
 (defun namespace--defstruct-options (ns options name)
   (let* ((string (symbol-name name))
@@ -641,18 +660,15 @@
 	((and `(,op ,name . ,args)
 	      (guard (memq op '(:constructor :predicate :copier)))
 	      (guard (and (symbolp name) (not (eq name nil)))))
-	 (let ((rname (namespace-resolve ns (symbol-name name))))
-	   (push (cons name rname) fs)
-	   (push `(,op ,rname . ,args) opts)))
+	 (let* ((qsym (namespace--intern ns (symbol-name name)))
+		(csym (namespace--qsym-to-csym qsym)))
+	   (push (cons name qsym) fs)
+	   (push `(,op ,csym . ,args) opts)))
 	(`(:conc-name ,prefix)
 	 (let ((rname (namespace-resolve ns (symbol-name prefix))))
 	   (push `(:conc-name ,rname) opts)))
 	(o (push o opts))))
     (list fs opts)))
-
-(defun namespace--name-external-p (ns name)
-  (pcase (namespace--find-name ns name)
-    (`(:external . ,_) t)))
 
 (defun namespace--slot-aliases (ns slots name options)
   (let ((fs '())
@@ -662,19 +678,18 @@
     (dolist (slot slots)
       (let* ((n (pcase slot
 		  (`(,n . ,_) n)
-		  ((and n (guard (symbolp n))) n)))
-	     (cn (intern (concat (symbol-name conc-name) (symbol-name n))))
-	     (rn (namespace-resolve ns (symbol-name cn))))
-	(push (cons cn rn) fs)
-	(when (namespace--name-external-p ns (symbol-name cn))
-	  (let ((in (namespace--symconc (namespace--name ns)
-					'--
-					(symbol-name cn))))
-	    (push `(defalias ',rn ',in) aliases)
-	    (push `(gv-define-setter ,rn (value struct)
+		  ((and n (guard (symbolp n))) n)
+		  (_ (error "bug"))))
+	     (n (concat (symbol-name conc-name) (symbol-name n)))
+	     (qsym (namespace--intern ns n)))
+	(push (cons (intern n) qsym) fs)
+	(when (namespace--name-external-p ns n)
+	  (let ((in (namespace--symconc (namespace--name ns) '-- n))
+		(csym (namespace--qsym-to-csym qsym)))
+	    (push `(defalias ',csym ',in) aliases)
+	    (push `(gv-define-setter ,csym (value struct)
 		     `(setf (,',in ,struct) ,value))
-		  aliases)
-	    ))))
+		  aliases)))))
     (list fs aliases)))
 
 (defun namespace--defstruct-like (env form)
@@ -716,9 +731,15 @@
     (_ nil)))
 
 (cl-defmacro namespace-global ((name &rest args))
-  (let ((fun (or (namespace--macro-function name)
-		 (error "Not a global macro: %s" name))))
-    (apply fun args)))
+  (let ((macro (namespace--macro-function name)))
+    (cond (macro (apply macro args))
+	  (t `(funcall ',name . ,args)))))
+
+
+(defun namespace-eval-in-namespace (ns form &optional lexical)
+  (let ((fsyms (namespace--fsyms ns)))
+    (eval `(namespace--macrolet ,(namespace--fsyms-to-csyms fsyms) ,form)
+	  lexical)))
 
 (provide 'namespace)
 

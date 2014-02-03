@@ -25,14 +25,18 @@ install    -- install ELPA package\n\
 uninstall  -- uninstall ELPA package\n\
 help       -- print this message"
 
-all: namespace.elc cl-ns.elc namespace-srcloc.elc
+ELFILES := namespace.el cl-ns.el namespace-srcloc.el namespace-test.el
+
+ELCFILES := $(patsubst %.el,%.elc,${ELFILES})
+
+all: ${ELCFILES}
 
 %.elc: %.el
 	emacs --batch -L . -f batch-byte-compile $<
 
 RUNTESTS = emacs --batch -L . -l $(1) -f ert-run-tests-batch-and-exit
 
-check: namespace.elc namespace-test.elc cl-ns.elc
+check: ${ELCFILES}
 	$(call RUNTESTS,namespace-test.el)
 	$(call RUNTESTS,namespace-test.elc)
 
@@ -41,8 +45,7 @@ clean:
 	  -regex '.*\(\.elc\|\.tar\|-pkg\.el\)$$' \
 	  -exec rm -v {} \;
 
-PKGFILES := namespace-pkg.el namespace.el cl-ns.el \
-namespace-srcloc.el namespace-test.el README.org
+PKGFILES := ${ELFILES} namespace-pkg.el README.org
 
 VERSION = $(shell awk '/^;; Version: [0-9.]+/ { print $$3 }' namespace.el)
 

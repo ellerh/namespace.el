@@ -29,9 +29,15 @@
 (eval-when-compile
   (require 'pcase))
 
+(define-namespace namespace
+    ((:export find-namespace
+	      resolve
+	      global
+	      eval-in-namespace)))
+
 (define-namespace namespace-srcloc
-    ((:use cl)
-     (:export find-definition bind-keys))
+    ((:use cl namespace)
+     (:export find-definition eval-last-sexp bind-keys))
 
   (defun push-tag-mark ()
     (ring-insert find-tag-marker-ring (point-marker)))
@@ -49,16 +55,7 @@
       (and (re-search-backward "^(" nil t)
 	   (looking-at "(define-namespace")
 	   (let ((name (intern (extract-namespace-name))))
-	     (namespace-find-namespace name)))))
-
-  (defun locate-name (name rsym)
-    (let* ((fun (symbol-function rsym))
-	   (file (cond ((autoloadp fun) (nth 1 fun))
-		       ((subrp fun) (help-C-file-name fun 'subr))
-		       (t (symbol-file rsym 'defun)))))
-      (or file (error "Can't determine file for: %s" rsym))
-      (save-excursion
-	(find-function-search-for-symbol (make-symbol name) nil file))))
+	     (find-namespace name)))))
 
   (defun namespace-names-in-file (file)
     (with-current-buffer (find-file-noselect file)
@@ -74,10 +71,21 @@
       (when file
 	(let ((nsnames (namespace-names-in-file (find-library-name file)))
 	      (name (symbol-name sym)))
-	  (loop for nsname in nsnames
-		when (string-match (concat "^" nsname "--?") name)
-		return (cons (namespace-find-namespace (intern nsname))
-			     (substring name (match-end 0))))))))
+	  (dolist (nsname nsnames)
+	    (when (string-match (concat "^" nsname "--?") name)
+	      (let ((ns (find-namespace (intern nsname)))
+		    (n (substring name (match-end 0))))
+		(when (and ns (namespace--find-name ns n))
+		  (return (cons ns n))))))))))
+
+  (defun locate-name (name rsym)
+    (let* ((fun (symbol-function rsym))
+	   (file (cond ((autoloadp fun) (nth 1 fun))
+		       ((subrp fun) (help-C-file-name fun 'subr))
+		       (t (symbol-file rsym 'defun)))))
+      (or file (error "Can't determine file for: %s" rsym))
+      (save-excursion
+	(find-function-search-for-symbol (make-symbol name) nil file))))
 
   (defun locate-symbol (sym)
     (let ((loc (save-excursion (find-function-noselect sym))))
@@ -95,9 +103,9 @@
     (unless name
       (error "No symbol at point"))
     (let* ((ns (current-namespace))
-	   (rsym (and ns (namespace-resolve ns name)))
+	   (rsym (and ns (resolve ns name)))
 	   (sym (intern-soft name))
-	   (loc (cond ((fboundp rsym) (locate-name name rsym))
+	   (loc (cond ((fboundp rsym) (locate-symbol rsym))
 		      ((fboundp sym) (locate-symbol sym))
 		      ((boundp sym) (find-variable-noselect sym))
 		      (t (error "Symbol not bound: %s" name))))
@@ -112,10 +120,27 @@
 	   (error "Found no definition for %s in %s"
 		  (substring-no-properties name) buffer)))))
 
+  (defun eval-sexp (ns sexp insert-result)
+    (let ((standard-output (if insert-result (current-buffer) t)))
+      ;; Setup the lexical environment if lexical-binding is enabled.
+      (eval-last-sexp-print-value
+       (eval-in-namespace ns sexp lexical-binding)
+       insert-result)))
+
+  (defun eval-last-sexp (insert-result)
+    (interactive "P")
+    (let ((ns (current-namespace)))
+      (cond (ns
+	     (eval-sexp ns (preceding-sexp) insert-result))
+	    (t
+	     (global (eval-last-sexp insert-result))))))
+
   (defun bind-keys ()
     (define-key emacs-lisp-mode-map (kbd "M-.")
       'namespace-srcloc-find-definition)
-    (define-key emacs-lisp-mode-map (kbd "M-,") 'pop-tag-mark))
+    (define-key emacs-lisp-mode-map (kbd "M-,") 'pop-tag-mark)
+    (define-key emacs-lisp-mode-map (kbd "C-x C-e")
+      'namespace-srcloc-eval-last-sexp))
 
   )
 
