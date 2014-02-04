@@ -37,7 +37,9 @@
 
 (define-namespace namespace-srcloc
     ((:use cl namespace)
-     (:export find-definition eval-last-sexp bind-keys))
+     (:export find-definition
+	      eval-last-sexp
+	      activate))
 
   (defun push-tag-mark ()
     (ring-insert find-tag-marker-ring (point-marker)))
@@ -78,6 +80,19 @@
 		(when (and ns (namespace--find-name ns n))
 		  (return (cons ns n))))))))))
 
+  ;; skip over whitespace to next ( if needed
+  (defun align-loc (loc)
+    (pcase loc
+      ((or `nil `(,_ . nil)) loc)
+      (`(,buffer . ,pos)
+       (with-current-buffer buffer
+	 (save-excursion
+	   (goto-char pos)
+	   (cond ((looking-at "\s +(")
+		  (goto-char (1- (match-end 0)))
+		  (cons buffer (point)))
+		 (t loc)))))))
+
   (defun locate-name (name rsym)
     (let* ((fun (symbol-function rsym))
 	   (file (cond ((autoloadp fun) (nth 1 fun))
@@ -85,7 +100,8 @@
 		       (t (symbol-file rsym 'defun)))))
       (or file (error "Can't determine file for: %s" rsym))
       (save-excursion
-	(find-function-search-for-symbol (make-symbol name) nil file))))
+	(align-loc (find-function-search-for-symbol (make-symbol name)
+						    nil file)))))
 
   (defun locate-symbol (sym)
     (let ((loc (save-excursion (find-function-noselect sym))))
@@ -99,9 +115,10 @@
 
   (defun find-definition (name)
     "Jump to the definition of the function (or variable) at point."
-    (interactive (list (thing-at-point 'symbol)))
-    (unless name
-      (error "No symbol at point"))
+    (interactive (list (cond (current-prefix-arg
+			      (read-from-minibuffer "Name: "))
+			     (t (or (thing-at-point 'symbol)
+				    (error "No symbol at point"))))))
     (let* ((ns (current-namespace))
 	   (rsym (and ns (resolve ns name)))
 	   (sym (intern-soft name))
@@ -135,16 +152,35 @@
 	    (t
 	     (global (eval-last-sexp insert-result))))))
 
-  (defun bind-keys ()
+  (defun activate ()
+    (interactive)
+    (ad-activate 'find-function-search-for-symbol)
     (define-key emacs-lisp-mode-map (kbd "M-.")
       'namespace-srcloc-find-definition)
     (define-key emacs-lisp-mode-map (kbd "M-,") 'pop-tag-mark)
     (define-key emacs-lisp-mode-map (kbd "C-x C-e")
-      'namespace-srcloc-eval-last-sexp))
+      'namespace-srcloc-eval-last-sexp)
+    )
 
   )
 
-;;;###autoload(autoload 'namespace-srcloc-find-definition "namespace-srcloc")
+(defadvice find-function-search-for-symbol (after namespace--unqualified)
+  (let ((loc ad-return-value)
+	(sym (ad-get-arg 0)))
+    (pcase loc
+      (`(,_ . nil)
+       (let ((guess (namespace-srcloc--guess-namespace sym)))
+	 (pcase guess
+	   (`(,_ . ,name)
+	    (let ((loc2 (namespace-srcloc--locate-name name sym)))
+	      (pcase loc2
+		((or `nil `(,_ . nil)) loc)
+		(`(,buffer . ,pos)
+		 (setq ad-return-value loc2)))))
+	   (_ loc))))
+      (_ loc))))
+
+;;;###autoload(autoload 'namespace-srcloc-activate "namespace-srcloc" nil t)
 
 (provide 'namespace-srcloc)
 
