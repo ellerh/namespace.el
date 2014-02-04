@@ -84,12 +84,12 @@
 	      c
 	      c-x))
 
-  (cl-defstruct a x y)
+  (defstruct a x y)
 
-  (cl-defstruct (b (:conc-name b/))
+  (defstruct (b (:conc-name b/))
     x y)
 
-  (cl-defstruct (c (:predicate c?))
+  (defstruct (c (:predicate c?))
     x y)
 
   )
@@ -101,9 +101,9 @@
 	      c
 	      c-x))
 
-  (cl-defstruct a x)
+  (defstruct a x)
 
-  (cl-defstruct (c (:predicate c?))
+  (defstruct (c (:predicate c?))
     x)
 
   )
