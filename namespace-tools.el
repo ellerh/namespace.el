@@ -52,6 +52,7 @@
 	(backward-sexp)
 	(buffer-substring (point) end))))
 
+  ;; Return the namespace at point (or nil).
   (defun current-namespace ()
     (save-excursion
       (and (re-search-backward "^(" nil t)
@@ -68,6 +69,8 @@
 			(goto-char (match-beginning 0))
 			(extract-namespace-name))))))
 
+  ;; Try to guess the namespace for symbol SYM.  Return either nil or
+  ;; (NS . NAME) where NS is a namespace and NAME is a string.
   (defun guess-namespace (sym)
     (let* ((file (symbol-file sym 'defun)))
       (when file
@@ -153,14 +156,13 @@
 	     (global (eval-last-sexp insert-result))))))
 
   (defun activate ()
+    "Activate advice and bind keys."
     (interactive)
     (ad-activate 'find-function-search-for-symbol)
-    (define-key emacs-lisp-mode-map (kbd "M-.")
-      'namespace-tools-find-definition)
-    (define-key emacs-lisp-mode-map (kbd "M-,") 'pop-tag-mark)
-    (define-key emacs-lisp-mode-map (kbd "C-x C-e")
-      'namespace-tools-eval-last-sexp)
-    )
+    (let ((map emacs-lisp-mode-map))
+      (define-key map (kbd "M-.") 'namespace-tools-find-definition)
+      (define-key map (kbd "M-,") 'pop-tag-mark)
+      (define-key map (kbd "C-x C-e") 'namespace-tools-eval-last-sexp)))
 
   )
 
