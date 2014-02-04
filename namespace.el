@@ -748,6 +748,12 @@
     (eval `(namespace--macrolet ,(namespace--fsyms-to-csyms fsyms) ,form)
 	  lexical)))
 
+
+(defun namespace-map-accessible (ns fun)
+  (dolist (qsym (namespace--accessible-qsyms ns))
+    (let ((name (namespace--qsym-name qsym)))
+      (funcall fun name))))
+
 (provide 'namespace)
 
 ;; namespace.el ends here

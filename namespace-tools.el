@@ -34,7 +34,8 @@
     ((:export find-namespace
 	      resolve
 	      global
-	      eval-in-namespace)))
+	      eval-in-namespace
+	      map-accessible)))
 
 (define-namespace namespace-tools
     ((:use cl namespace)
@@ -153,25 +154,29 @@
       (cond (ns (eval-sexp ns (preceding-sexp) insert-result))
 	    (t (global (eval-last-sexp insert-result))))))
 
-  (defun function-name-at-point ()
+  (defun call-name-at-point ()
     (ignore-errors
       (save-excursion
 	(backward-up-list 1)
 	(down-list 1)
 	(thing-at-point 'symbol))))
 
+  (defun resolve-fbound (name ns)
+    (or (and ns
+	     (let ((rsym (resolve ns name)))
+	       (and (fboundp rsym)
+		    rsym)))
+	(let ((sym (intern-soft name)))
+	  (and sym
+	       (fboundp sym)
+	       sym))))
+
   (defun function-symbol-at-point ()
-    (let ((name (function-name-at-point)))
-      (and name
-	   (or (let ((ns (current-namespace)))
-		 (and ns
-		      (let ((rsym (resolve ns name)))
-			(and (fboundp rsym)
-			     rsym))))
-	       (let ((sym (intern-soft name)))
-		 (and sym
-		      (fboundp sym)
-		      sym))))))
+    (let ((ns (current-namespace)))
+      (or (let ((name (thing-at-point 'symbol)))
+	    (and name (resolve-fbound name ns)))
+	  (let ((name (call-name-at-point)))
+	    (and name (resolve-fbound name ns))))))
 
   (defun arglist (sym)
     (let ((fun (symbol-function sym))
@@ -182,11 +187,39 @@
   (defun eldoc ()
     (let ((sym (function-symbol-at-point)))
       (and sym
-	   (let* ((args (arglist 'loop))
+	   (let* ((args (arglist sym))
 		  (idx (cadr (eldoc-fnsym-in-current-sexp)))
 		  (argstring (eldoc-function-argstring
 			      (loop for a in args collect (format "%s" a)))))
 	     (eldoc-highlight-function-argument sym argstring idx)))))
+
+  (defun completions-for (ns prefix)
+    (let ((result '()))
+      (map-accessible ns (lambda (name)
+			   (when (string-prefix-p prefix name)
+			     (push name result))))
+      result))
+
+  ;; Return completions at point.
+  (defun completions ()
+    (let ((ns (current-namespace))
+	  (bounds (bounds-of-thing-at-point 'symbol)))
+      (and ns
+	   bounds
+	   (let* ((start (car bounds))
+		  (end (point))
+		  (prefix (buffer-substring-no-properties start end))
+		  (list (append (completions-for ns prefix)
+				(all-completions prefix obarray
+						 (lambda (sym)
+						   (or (fboundp sym)
+						       (boundp sym)))))))
+	     (list start end list :exclusive 'no)))))
+
+  (defun elisp-mode-hook ()
+    (add-hook 'completion-at-point-functions
+	      'namespace-tools--completions
+	      nil 'local))
 
   (defun activate ()
     "Activate advice and bind keys."
@@ -197,7 +230,13 @@
     (let ((map emacs-lisp-mode-map))
       (define-key map (kbd "M-.") 'namespace-tools-find-definition)
       (define-key map (kbd "M-,") 'pop-tag-mark)
-      (define-key map (kbd "C-x C-e") 'namespace-tools-eval-last-sexp)))
+      (define-key map (kbd "C-x C-e") 'namespace-tools-eval-last-sexp))
+    (add-hook 'emacs-lisp-mode-hook 'namespace-tools--elisp-mode-hook)
+    ;; enable completion in all elisp buffers
+    (dolist (b (buffer-list))
+      (with-current-buffer b
+	(when (eq major-mode 'emacs-lisp-mode)
+	  (elisp-mode-hook)))))
 
   )
 
