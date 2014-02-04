@@ -1,4 +1,4 @@
-;;; namespace-tools.el --- Namespace aware M-.     -*- lexical-binding: t -*-
+;;; namespace-tools.el --- Namespace aware M-.      -*- lexical-binding: t -*-
 
 ;; Copyright (C) 2014 Helmut Eller
 
@@ -142,7 +142,6 @@
 
   (defun eval-sexp (ns sexp insert-result)
     (let ((standard-output (if insert-result (current-buffer) t)))
-      ;; Setup the lexical environment if lexical-binding is enabled.
       (eval-last-sexp-print-value
        (eval-in-namespace ns sexp lexical-binding)
        insert-result)))
@@ -150,15 +149,56 @@
   (defun eval-last-sexp (insert-result)
     (interactive "P")
     (let ((ns (current-namespace)))
-      (cond (ns
-	     (eval-sexp ns (preceding-sexp) insert-result))
-	    (t
-	     (global (eval-last-sexp insert-result))))))
+      (cond (ns (eval-sexp ns (preceding-sexp) insert-result))
+	    (t (global (eval-last-sexp insert-result))))))
+
+  (defun function-name-at-point ()
+    (ignore-errors
+      (save-excursion
+	(backward-up-list 1)
+	(down-list 1)
+	(thing-at-point 'symbol))))
+
+  (defun function-symbol-at-point ()
+    (let ((name (function-name-at-point)))
+      (and name
+	   (or (let ((ns (current-namespace)))
+		 (and ns
+		      (let ((rsym (resolve ns name)))
+			(and (fboundp rsym)
+			     rsym))))
+	       (let ((sym (intern-soft name)))
+		 (and sym
+		      (fboundp sym)
+		      sym))))))
+
+  (defun symbol-at-point ()
+    (let* ((name (thing-at-point 'symbol))
+	   (ns (current-namespace)))
+      (or (and ns (resolve ns))
+	  (intern-soft ns))))
+
+  (defun arglist (sym)
+    (let ((fun (symbol-function sym))
+	  (doc (help-split-fundoc (documentation sym t) nil)))
+      (cond ((consp doc) (cdr (read (car doc))))
+	    (t (help-function-arglist fun)))))
+
+  (defun eldoc ()
+    (let ((sym (function-symbol-at-point)))
+      (and sym
+	   (let* ((args (arglist 'loop))
+		  (idx (cadr (eldoc-fnsym-in-current-sexp)))
+		  (argstring (eldoc-function-argstring
+			      (loop for a in args collect (format "%s" a)))))
+	     (eldoc-highlight-function-argument sym argstring idx)))))
 
   (defun activate ()
     "Activate advice and bind keys."
     (interactive)
     (ad-activate 'find-function-search-for-symbol)
+    (ad-activate 'function-called-at-point)
+    (setq eldoc-documentation-function #'eldoc)
     (let ((map emacs-lisp-mode-map))
       (define-key map (kbd "M-.") 'namespace-tools-find-definition)
       (define-key map (kbd "M-,") 'pop-tag-mark)
@@ -181,6 +221,11 @@
 		 (setq ad-return-value loc2)))))
 	   (_ loc))))
       (_ loc))))
+
+(defadvice function-called-at-point (around namespace--resolve)
+  (setq ad-return-value
+	(or (namespace-tools--function-symbol-at-point)
+	    ad-do-it)))
 
 ;;;###autoload(autoload 'namespace-tools-activate "namespace-tools" nil t)
 

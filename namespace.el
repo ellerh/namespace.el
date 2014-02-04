@@ -464,7 +464,9 @@
 
 (defun namespace-resolve (ns name)
   (namespace--ct (namespace ns) (string name))
-  (namespace--qsym-to-csym (namespace--intern ns name)))
+  (let ((existing (namespace--find-name ns name)))
+    (cond (existing (namespace--qsym-to-csym (cdr existing)))
+	  (t (intern-soft name)))))
 
 (defvar namespace--rewriters (make-hash-table))
 
