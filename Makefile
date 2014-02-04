@@ -25,7 +25,7 @@ install    -- install ELPA package\n\
 uninstall  -- uninstall ELPA package\n\
 help       -- print this message"
 
-ELFILES := namespace.el cl-ns.el namespace-srcloc.el namespace-test.el
+ELFILES := namespace.el cl-ns.el namespace-tools.el namespace-test.el
 
 ELCFILES := $(patsubst %.el,%.elc,${ELFILES})
 
