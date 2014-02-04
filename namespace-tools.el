@@ -26,6 +26,7 @@
 (require 'cl-ns)
 (require 'etags)
 (require 'find-func)
+(require 'eldoc)
 (eval-when-compile
   (require 'pcase))
 
@@ -171,12 +172,6 @@
 		 (and sym
 		      (fboundp sym)
 		      sym))))))
-
-  (defun symbol-at-point ()
-    (let* ((name (thing-at-point 'symbol))
-	   (ns (current-namespace)))
-      (or (and ns (resolve ns))
-	  (intern-soft ns))))
 
   (defun arglist (sym)
     (let ((fun (symbol-function sym))

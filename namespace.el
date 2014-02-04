@@ -667,8 +667,9 @@
 	   (push (cons name qsym) fs)
 	   (push `(,op ,csym . ,args) opts)))
 	(`(:conc-name ,prefix)
-	 (let ((rname (namespace-resolve ns (symbol-name prefix))))
-	   (push `(:conc-name ,rname) opts)))
+	 (let* ((qsym (namespace--intern ns (symbol-name prefix)))
+		(csym (namespace--qsym-to-csym qsym)))
+	   (push `(:conc-name ,csym) opts)))
 	(o (push o opts))))
     (list fs opts)))
 
@@ -727,6 +728,7 @@
   (namespace--defstruct-like env form))
 
 (namespace-define-rewriter defadvice (env form)
+  form
   (error "defadvice not allowed in namespace"))
 
 
