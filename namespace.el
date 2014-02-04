@@ -726,6 +726,9 @@
 (namespace-define-rewriter cl-defstruct (env form)
   (namespace--defstruct-like env form))
 
+(namespace-define-rewriter defadvice (env form)
+  (error "defadvice not allowed in namespace"))
+
 
 (defun namespace--macro-function (name)
   (pcase (symbol-function name)
