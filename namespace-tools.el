@@ -82,7 +82,7 @@
 	    (when (string-match (concat "^" nsname "--?") name)
 	      (let ((ns (find-namespace (intern nsname)))
 		    (n (substring name (match-end 0))))
-		(when (and ns (namespace--find-name ns n))
+		(when (and ns (namespace--lookup ns n))
 		  (return (cons ns n))))))))))
 
   ;; skip over whitespace to next ( if needed

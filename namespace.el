@@ -61,21 +61,21 @@
 		     ,@(cl-loop for name in names collect
 				`(cl-check-type ,name ,type)))))))
 
-(defun namespace--find-name (ns name)
+(defun namespace--lookup (ns name)
   (namespace--ct (namespace ns) (string name))
-  (or (let ((sym (gethash name (namespace--internal ns) name)))
-	(and (not (eq sym name))
-	     (cons :internal sym)))
-      (let ((sym (gethash name (namespace--external ns) name)))
-	(and (not (eq sym name))
-	     (cons :external sym)))
+  (or (let ((qsym (gethash name (namespace--internal ns))))
+	(and qsym
+	     (cons :internal qsym)))
+      (let ((qsym (gethash name (namespace--external ns))))
+	(and qsym
+	     (cons :external qsym)))
       (cl-dolist (e (namespace--exporters ns))
-	(let ((sym (gethash name (namespace--external e) name)))
-	  (when (not (eq sym name))
-	    (cl-return (cons :inherited sym)))))))
+	(let ((qsym (gethash name (namespace--external e))))
+	  (when qsym
+	    (cl-return (cons :inherited qsym)))))))
 
 (defun namespace--intern (ns name)
-  (let ((existing (namespace--find-name ns name)))
+  (let ((existing (namespace--lookup ns name)))
     (cond (existing (cdr existing))
 	  (t (let ((qsym (namespace--qsym ns name)))
 	       (puthash name qsym (namespace--internal ns))
@@ -113,7 +113,7 @@
   (let ((internal (namespace--internal ns))
 	(shadows (namespace--shadows ns)))
     (dolist (name names)
-      (let ((qsym (pcase (namespace--find-name ns name)
+      (let ((qsym (pcase (namespace--lookup ns name)
 		    ((or `nil
 			 `(:inherited . ,qsym))
 		     (let ((qsym (namespace--qsym ns name)))
@@ -131,7 +131,7 @@
 	(shadows (namespace--shadows ns))
 	(external (namespace--external ns))
 	(name (namespace--qsym-name qsym)))
-    (let* ((probe (namespace--find-name ns name)))
+    (let* ((probe (namespace--lookup ns name)))
       (pcase probe
 	(`nil
 	 (puthash name qsym internal))
@@ -160,7 +160,7 @@
   (let ((conflicts '()))
     (maphash
      (lambda (name qsym2)
-       (pcase (namespace--find-name ns name)
+       (pcase (namespace--lookup ns name)
 	 (`(,_ . ,qsym)
 	  (when (and (not (eq qsym qsym2))
 		     (not (gethash name (namespace--shadows ns))))
@@ -199,7 +199,7 @@
 	(unless (eq found qsym)
 	  (when found
 	    (push (cons qsym found) conflicts))
-	  (pcase (namespace--find-name ns name)
+	  (pcase (namespace--lookup ns name)
 	    (`nil
 	     (push qsym imports))
 	    ((and `(,_ . ,qsym2)
@@ -224,7 +224,7 @@
     (dolist (qsym qsyms)
       (let ((name (namespace--qsym-name qsym)))
 	(dolist (ns2 importers)
-	  (pcase (namespace--find-name ns2 name)
+	  (pcase (namespace--lookup ns2 name)
 	    (`(,_ . ,qsym2)
 	     (cond ((eq qsym2 qsym))
 		   ((gethash name (namespace--shadows ns2)))
@@ -235,7 +235,7 @@
   (let ((missing '())
 	(imports '()))
     (dolist (qsym qsyms)
-      (pcase (namespace--find-name ns (namespace--qsym-name qsym))
+      (pcase (namespace--lookup ns (namespace--qsym-name qsym))
 	(`nil (push qsym missing))
 	((and `(,_ . ,qsym2) (guard (eq qsym2 qsym))) qsym2)
 	(`(:inherited . ,qsym2) qsym2 (push qsym imports))))
@@ -356,7 +356,7 @@
 
 ;; like namespace--intern but warns about interning
 (defun namespace--find-or-make-qsym (ns name)
-  (let ((existing (namespace--find-name ns name)))
+  (let ((existing (namespace--lookup ns name)))
     (cond (existing (cdr existing))
 	  (t
 	   (warn "Interning %s in namespace %s" name
@@ -367,7 +367,7 @@
   (let ((old-shadows (namespace--shadowing-qsyms ns)))
     (namespace--shadow ns shadows)
     (dolist (name shadows)
-      (setq old-shadows (remove (namespace--find-name ns name) old-shadows)))
+      (setq old-shadows (remove (namespace--lookup ns name) old-shadows)))
     (cl-loop for (other-ns . names) in shadowing-imports do
 	     (let ((other-ns (namespace--find-namespace-or-lose other-ns)))
 	       (dolist (name names)
@@ -392,7 +392,7 @@
 
 (defun namespace--find-qsym-or-lose (ns name)
   (namespace--ct (namespace ns) (symbol name))
-  (let ((x (namespace--find-name ns (symbol-name name))))
+  (let ((x (namespace--lookup ns (symbol-name name))))
     (cond ((not x)
 	   (error "Name %s no accessible in %s" name (namespace--name ns)))
 	  (t
@@ -451,7 +451,7 @@
 ;;     b)))
 
 (defun namespace--name-external-p (ns name)
-  (pcase (namespace--find-name ns name)
+  (pcase (namespace--lookup ns name)
     (`(:external . ,_) t)))
 
 (defun namespace--qsym-to-csym (qsym)
@@ -464,7 +464,7 @@
 
 (defun namespace-resolve (ns name)
   (namespace--ct (namespace ns) (string name))
-  (let ((existing (namespace--find-name ns name)))
+  (let ((existing (namespace--lookup ns name)))
     (cond (existing (namespace--qsym-to-csym (cdr existing)))
 	  (t (intern-soft name)))))
 
@@ -707,7 +707,7 @@
 	       (string (symbol-name name))
 	       (nsname (namespace--name ns))
 	       (tname (namespace--symconc nsname '-- string))
-	       (extern (eq (car (namespace--find-name ns string))
+	       (extern (eq (car (namespace--lookup ns string))
 			   :external))
 	       (`(,fs1 ,options2) (namespace--defstruct-options
 				   ns options name))
