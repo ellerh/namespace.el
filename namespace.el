@@ -49,7 +49,7 @@
   ;; string -> qsym
   (external (make-hash-table :test 'equal) :type hash-table :read-only t)
   ;; string -> qsym
-  ;; these names are also in either in internal or external.
+  ;; these names are also in either internal or external.
   (shadows (make-hash-table :test 'equal) :type hash-table :read-only t)
   )
 
@@ -156,6 +156,28 @@
 			  (namespace--qsym-to-csym q1)
 			  (namespace--qsym-to-csym q2))))
 
+(defun namespace--conflicts-to-csyms (conflicts)
+  (cl-loop for (q1 . q2) in conflicts
+	   collect (cons (namespace--qsym-to-csym q1)
+			 (namespace--qsym-to-csym q2))))
+
+(define-error 'namespace-error "Namespace error")
+(define-error 'namespace-conflict "Name conflict" 'namespace-error)
+(define-error 'namespace-use-conflict "Namespace :use conflict"
+  'namespace-conflict)
+(define-error 'namespace-import-conflict "Namespace :import-from conflict"
+  'namespace-conflict)
+(define-error 'namespace-export-conflict "Namespace :export conflict"
+  'namespace-conflict)
+
+(defun namespace--error (type &rest args)
+  (signal type args))
+
+(defun namespace--conflict (type ns conflicts)
+  (namespace--error type
+		    (namespace--name ns)
+		    (namespace--conflicts-to-csyms conflicts)))
+
 (defun namespace--check-use-conflicts (ns ns2)
   (let ((conflicts '()))
     (maphash
@@ -164,12 +186,12 @@
 	 (`(,_ . ,qsym)
 	  (when (and (not (eq qsym qsym2))
 		     (not (gethash name (namespace--shadows ns))))
-	    (push (cons qsym qsym2) conflicts)))))
+	    (push (cons qsym qsym2) conflicts)))
+	 (nil)
+	 (_ (error "bug"))))
      (namespace--external ns2))
     (when conflicts
-      (error "Conflict caused by :use of namespace %s:\n%s"
-	     (namespace--name ns2)
-	     (namespace--conflicts-to-string conflicts)))))
+      (namespace--conflict 'namespace-use-conflict ns conflicts))))
 
 (defun namespace--use1 (ns ns2)
   (unless (member ns2 (namespace--exporters ns))
@@ -206,10 +228,10 @@
 		  (guard (not (eq qsym qsym2))))
 	     (push (cons qsym qsym2) conflicts))
 	    (`(:inherited . ,_)
-	     (push qsym imports))))))
+	     (push qsym imports))
+	    (_ (error "bug"))))))
     (when conflicts
-      (error "Import into namespace %s causes conflict: %S"
-	     (namespace--name ns) conflicts))
+      (namespace--conflict 'namespace-import-conflict ns conflicts))
     imports))
 
 (defun namespace--import (ns qsyms)
@@ -228,17 +250,18 @@
 	    (`(,_ . ,qsym2)
 	     (cond ((eq qsym2 qsym))
 		   ((gethash name (namespace--shadows ns2)))
-		   (t (push (cons qsym qsym2) conflicts))))))))
+		   (t (push (cons qsym qsym2) conflicts))))
+	    (_ (error "bug"))))))
     (when conflicts
-      (error "Export from namespace %s causes conflicts: %S"
-	     (namespace--name ns) conflicts)))
+      (namespace--conflict 'namespace-export-conflict ns conflicts)))
   (let ((missing '())
 	(imports '()))
     (dolist (qsym qsyms)
       (pcase (namespace--lookup ns (namespace--qsym-name qsym))
 	(`nil (push qsym missing))
 	((and `(,_ . ,qsym2) (guard (eq qsym2 qsym))) qsym2)
-	(`(:inherited . ,qsym2) qsym2 (push qsym imports))))
+	(`(:inherited . ,qsym2) qsym2 (push qsym imports))
+	(_ (error "bug?"))))
     (when missing
       (error "Export of non-accessible symbols from namespace %s: %S"
 	     (namespace--name ns) missing))
@@ -275,6 +298,7 @@
   (or (namespace-find-namespace name)
       (error "Namespace doesn't exist: %S" name)))
 
+;; FIXME: deletion from importers/exporters is missing
 (defun namespace--delete (name)
   (namespace--ct (symbol name))
   (remhash name namespace--table))
@@ -303,7 +327,7 @@
   ;; Each argument is of the form (:key . set).
   (cl-loop for ((key1 . set1) . as) on args do
 	   (cl-loop for (key2 . set2) in as do
-		    (let ((common (cl-intersection set1 set2 :key #'equal)))
+		    (let ((common (cl-intersection set1 set2 :test #'equal)))
 		      (when common
 			(error
 			 "Parameters %S and %S not disjoint. Common items: %S"
@@ -339,7 +363,7 @@
 	((and `(:export . ,names)
 	      (guard (namespace--list-of-symbols-p names)))
 	 (setq exports (append exports (namespace--stringify-names names))))
-	(_ (error "Invalid namspace option: %S" option))))
+	(_ (error "Invalid namespace option: %S" option))))
     (namespace--check-disjoint
      (cons :intern interns)
      (cons :export exports))
@@ -391,8 +415,8 @@
 	      (mapcar #'namespace--name unused))))))
 
 (defun namespace--find-qsym-or-lose (ns name)
-  (namespace--ct (namespace ns) (symbol name))
-  (let ((x (namespace--lookup ns (symbol-name name))))
+  (namespace--ct (namespace ns) (string name))
+  (let ((x (namespace--lookup ns name)))
     (cond ((not x)
 	   (error "Name %s no accessible in %s" name (namespace--name ns)))
 	  (t
@@ -452,7 +476,8 @@
 
 (defun namespace--name-external-p (ns name)
   (pcase (namespace--lookup ns name)
-    (`(:external . ,_) t)))
+    (`(:external . ,_) t)
+    (_ nil)))
 
 (defun namespace--qsym-to-csym (qsym)
   (let* ((name (namespace--qsym-name qsym))
@@ -605,7 +630,8 @@
 	      (csym (namespace--qsym-to-csym qsym)))
 	 (list `((,sym . ,qsym))
 	       `(,op ,csym . ,rest)
-	       nil))))))
+	       nil)))
+      (_ (error "syntax error: %S" form)))))
 
 (defmacro namespace--define-defun-like (&rest names)
   `(progn

@@ -274,4 +274,44 @@
 (ert-deftest test-h.6 ()
   (should (equal (h-f 7) 6)))
 
+(define-namespace c1.a
+  ((:export f)))
+
+(define-namespace c1.b
+  ((:export f)))
+
+(ert-deftest test-conflict.1 ()
+  (should (equal
+	   (condition-case e
+	       (eval '(define-namespace c1.c
+			((:use c1.a c1.b))))
+	     (namespace-use-conflict (cdr e)))
+	   '(c1.c ((c1.a-f . c1.b-f))))))
+
+(ert-deftest test-conflict.2 ()
+  (should (equal
+	   (condition-case e
+	       (eval '(define-namespace c2.a
+			((:use c1.a)
+			 (:import-from c1.b f))))
+	     (namespace-import-conflict (cdr e)))
+	   '(c2.a ((c1.b-f . c1.a-f))))))
+
+(define-namespace c3.a
+    ((:export f)))
+
+(define-namespace c3.b
+    ((:use c3.a)
+     (:intern g)
+     (:export h)))
+
+(ert-deftest test-conflict.3 ()
+  (should (equal
+	   (condition-case e
+	       (eval '(define-namespace c3.a
+			((:export f g h))))
+	     (namespace-export-conflict (cdr e)))
+	   '(c3.a ((c3.a--h . c3.b-h)
+		   (c3.a--g . c3.b--g))))))
+
 ;;; namespace-test.el ends here
