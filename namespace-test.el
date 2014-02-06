@@ -55,26 +55,26 @@
     (funcall #'d (list 'b-f x)))
   )
 
-(define-namespace c
-    ((:use a)
-     (:shadow a c)
-     (:export a))
-
-  (defun a (x y)
-    (a-a (list 'c-a x) y))
-
-  (defun c (x)
-    (funcall #'d (list 'c--c x)))
-  )
-
-(define-namespace d
-    ((:use a)
-     (:shadowing-import-from c a)
-     (:export b))
-
-  (defun b (x y)
-    (a (list 'd-b x) y))
-  )
+;;(define-namespace c
+;;    ((:use a)
+;;     ;;(:shadow a c)
+;;     (:export a))
+;;
+;;  (defun a (x y)
+;;    (a-a (list 'c-a x) y))
+;;
+;;  (defun c (x)
+;;    (funcall #'d (list 'c--c x)))
+;;  )
+;;
+;;(define-namespace d
+;;    ((:use a)
+;;     ;;(:shadowing-import-from c a)
+;;     (:export b))
+;;
+;;  (defun b (x y)
+;;    (a (list 'd-b x) y))
+;;  )
 
 (define-namespace e
     ((:export make-a
@@ -184,14 +184,14 @@
 (ert-deftest test-b.2 ()
   (should (equal (b-f 1) '(a--b (a-d (b-f 1))))))
 
-(ert-deftest test-c.1 ()
-  (should (equal (c-a 1 2) '(a--b (a-a 2 (c-a 1))))))
-
-(ert-deftest test-c.2 ()
-  (should (equal (c--c 1) '(a--b (a-d (c--c 1))))))
-
-(ert-deftest test-d.1 ()
-  (should (equal (d-b 1 2) '(a--b (a-a 2 (c-a (d-b 1)))))))
+;;(ert-deftest test-c.1 ()
+;;  (should (equal (c-a 1 2) '(a--b (a-a 2 (c-a 1))))))
+;;
+;;(ert-deftest test-c.2 ()
+;;  (should (equal (c--c 1) '(a--b (a-d (c--c 1))))))
+;;
+;;(ert-deftest test-d.1 ()
+;;  (should (equal (d-b 1 2) '(a--b (a-a 2 (c-a (d-b 1)))))))
 
 (ert-deftest test-e.1 ()
   (should (equal (e-a-x (e-make-a :x 234 :y 456))
@@ -302,8 +302,8 @@
 
 (define-namespace c3.b
     ((:use c3.a)
-     (:intern g)
-     (:export h)))
+     (:export h))
+  (defun g () ))
 
 (ert-deftest test-conflict.3 ()
   (should (equal

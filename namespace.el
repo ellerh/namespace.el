@@ -27,30 +27,46 @@
   (require 'pcase))
 
 ;; A bit of terminology:
-;; qsym: a qualified symbol (a distinct type)
-;; csym: a concatenated symbol (has type symbol)
+;; qsym: qualified symbol (a distinct type)
+;; csym: concatenated symbol (has type symbol)
+;; id: unqualfied symbol (represented as string)
 
-(cl-defstruct (namespace--qsym (:constructor namespace--qsym (ns name))
+(cl-defstruct (namespace--qsym (:constructor namespace--qsym (ns id))
 			       (:copier nil))
   (ns (error "Required argument missing") :type namespace :read-only t)
-  (name (error "Required argument missing") :type string :read-only t))
+  (id (error "Required argument missing") :type string :read-only t))
 
+
+(cl-defstruct (namespace--table (:constructor nil) (:copier nil))
+  (table (error "Required argument missing") :read-only t
+	 :type (or namespace namespace--table)))
+
+(cl-defstruct (namespace--except-table (:include namespace--table)
+				       (:constructor namespace--except-table
+						     (table ids))
+				       (:copier nil))
+  (ids '() :type list :read-only t))
+
+(cl-defstruct (namespace--only-table (:include namespace--table)
+				     (:constructor namespace--only-table
+						   (table ))
+				     (:copier nil))
+  (alist '() :type list :read-only t))
+
+
 (cl-defstruct (namespace (:constructor namespace)
 			 (:predicate namespacep)
 			 (:copier nil)
 			 (:conc-name namespace--))
   (name (error "Required argument missing") :type symbol :read-only t)
-  ;; namespaces used by this namespace
+  ;; namespaces (or namespace-tables) used by this namespace
   (exporters '() :type list)
   ;; namespaces using this namespace
   (importers '() :type list)
-  ;; string -> qsym
+  ;; id -> qsym
   (internal (make-hash-table :test 'equal) :type hash-table :read-only t)
-  ;; string -> qsym
+  ;; id -> qsym
   (external (make-hash-table :test 'equal) :type hash-table :read-only t)
-  ;; string -> qsym
-  ;; these names are also in either internal or external.
-  (shadows (make-hash-table :test 'equal) :type hash-table :read-only t)
   )
 
 (defmacro namespace--ct (&rest decls)
@@ -61,25 +77,17 @@
 		     ,@(cl-loop for name in names collect
 				`(cl-check-type ,name ,type)))))))
 
-(defun namespace--lookup (ns name)
-  (namespace--ct (namespace ns) (string name))
-  (or (let ((qsym (gethash name (namespace--internal ns))))
-	(and qsym
-	     (cons :internal qsym)))
-      (let ((qsym (gethash name (namespace--external ns))))
-	(and qsym
-	     (cons :external qsym)))
-      (cl-dolist (e (namespace--exporters ns))
-	(let ((qsym (gethash name (namespace--external e))))
-	  (when qsym
-	    (cl-return (cons :inherited qsym)))))))
-
-(defun namespace--intern (ns name)
-  (let ((existing (namespace--lookup ns name)))
-    (cond (existing (cdr existing))
-	  (t (let ((qsym (namespace--qsym ns name)))
-	       (puthash name qsym (namespace--internal ns))
-	       qsym)))))
+
+(defun namespace--table-lookup (table id)
+  (cl-etypecase table
+    (namespace
+     (gethash id (namespace--external table)))
+    (namespace--except-table
+     (cond ((member id (namespace--except-table-ids table)) nil)
+	   (t (namespace--table-lookup (namespace--except-table-table table)
+				       id))))
+    (namespace--only-table
+     (cdr (assoc id (namespace--only-table-alist table))))))
 
 (defun namespace--hash-values (table)
   (let ((result '()))
@@ -87,8 +95,56 @@
 	     table)
     result))
 
-(defun namespace--shadowing-qsyms (ns)
-  (namespace--hash-values (namespace--shadows ns)))
+(defun namespace--table-map (table fun)
+  (cl-etypecase table
+    (namespace (maphash fun (namespace--external table)))
+    (namespace--except-table
+     (let ((ids (namespace--except-table-ids table)))
+       (namespace--table-map (namespace--except-table-table table)
+			     (lambda (id qsym)
+			       (unless (member id ids)
+				 (funcall fun id qsym))))))
+    (namespace--only-table
+     (cl-loop for (id . qsym) in (namespace--only-table-alist table)
+	      do (funcall fun id qsym)))))
+
+(defun namespace--table-values (table)
+  (cl-etypecase table
+    (namespace
+     (namespace--hash-values (namespace--external table)))
+    ((or namespace--except-table
+	 namespace--only-table)
+     (let ((result '()))
+       (namespace--table-map table
+			     (lambda (_id qsym)
+			       (push qsym result)))
+       result))))
+
+(defun namespace--table-ns (table)
+  (cl-etypecase table
+    (namespace table)
+    (namespace--table (namespace--table-ns (namespace--table-table table)))))
+
+
+(defun namespace--lookup (ns id)
+  (namespace--ct (namespace ns) (string id))
+  (or (let ((qsym (gethash id (namespace--internal ns))))
+	(and qsym
+	     (cons :internal qsym)))
+      (let ((qsym (gethash id (namespace--external ns))))
+	(and qsym
+	     (cons :external qsym)))
+      (cl-dolist (table (namespace--exporters ns))
+	(let ((qsym (namespace--table-lookup table id)))
+	  (when qsym
+	    (cl-return (cons :inherited qsym)))))))
+
+(defun namespace--intern (ns id)
+  (let ((existing (namespace--lookup ns id)))
+    (cond (existing (cdr existing))
+	  (t (let ((qsym (namespace--qsym ns id)))
+	       (puthash id qsym (namespace--internal ns))
+	       qsym)))))
 
 (defun namespace--exported-qsyms (ns)
   (namespace--hash-values (namespace--external ns)))
@@ -99,58 +155,14 @@
 	(external (namespace--external ns)))
     (append (namespace--hash-values internal)
 	    (namespace--hash-values external)
-	    (let ((sh (make-hash-table :test 'equal)))
-	      (cl-loop for e in (namespace--exporters ns)
-		       do (maphash (lambda (name qsym)
-				     (unless (or (gethash name sh)
-						 (gethash name internal)
-						 (gethash name external))
-				       (puthash name qsym sh)))
-				   (namespace--external e)))
-	      (namespace--hash-values sh)))))
+	    (cl-loop for e in (namespace--exporters ns)
+		     append (namespace--table-values e)))))
 
 (defun namespace--map-qsyms (ns fun)
   (maphash (lambda (_ qsym) (funcall fun qsym))
 	   (namespace--internal ns))
   (maphash (lambda (_ qsym) (funcall fun qsym))
 	   (namespace--external ns)))
-
-(defun namespace--shadow (ns names)
-  (let ((internal (namespace--internal ns))
-	(shadows (namespace--shadows ns)))
-    (dolist (name names)
-      (let ((qsym (pcase (namespace--lookup ns name)
-		    ((or `nil
-			 `(:inherited . ,qsym))
-		     (let ((qsym (namespace--qsym ns name)))
-		       (puthash name qsym internal)
-		       qsym))
-		    ((or `(:internal . ,qsym)
-			 `(:external . ,qsym))
-		     qsym)
-		    (_ (error "bug")))))
-	(puthash name qsym shadows)))))
-
-(defun namespace--shadowing-import (ns qsym)
-  (namespace--ct (namespace ns) (namespace--qsym qsym))
-  (let ((internal (namespace--internal ns))
-	(shadows (namespace--shadows ns))
-	(name (namespace--qsym-name qsym)))
-    (let* ((probe (namespace--lookup ns name)))
-      (pcase probe
-	(`nil
-	 (puthash name qsym internal))
-	((and (or `(:internal . ,qsym2)
-		  `(:external . ,qsym2))
-	      (guard (eq qsym2 qsym)))
-	 qsym2)
-	((or `(:internal . ,qsym2)
-	     `(:external . ,qsym2))
-	 (namespace--unintern ns qsym2)
-	 (puthash name qsym internal))
-	(_
-	 (puthash name qsym internal)))
-      (puthash name qsym shadows))))
 
 (defun namespace--conflicts-to-string (conflicts)
   (cl-loop for (q1 . q2) in conflicts
@@ -185,11 +197,10 @@
 (defun namespace--check-use-conflicts (ns ns2)
   (let ((conflicts '()))
     (maphash
-     (lambda (name qsym2)
-       (pcase (namespace--lookup ns name)
+     (lambda (id qsym2)
+       (pcase (namespace--lookup ns id)
 	 (`(,_ . ,qsym)
-	  (when (and (not (eq qsym qsym2))
-		     (not (gethash name (namespace--shadows ns))))
+	  (when (not (eq qsym qsym2))
 	    (push (cons qsym qsym2) conflicts)))
 	 (`nil)
 	 (_ (error "bug"))))
@@ -207,61 +218,55 @@
   (dolist (ns2 nss)
     (namespace--use1 ns ns2)))
 
-(defun namespace--unuse1 (ns ns2)
-  (setf (namespace--exporters ns) (remove ns2 (namespace--exporters ns)))
-  (setf (namespace--importers ns2) (remove ns (namespace--importers ns2))))
-
-(defun namespace--unuse (ns nss)
-  (dolist (ns2 nss)
-    (namespace--unuse1 ns ns2)))
-
 (defun namespace--check-import-conflicts (ns qsyms)
   (let ((imports '())
 	(conflicts '()))
     (dolist (qsym qsyms)
-      (let* ((name (namespace--qsym-name qsym))
-	     (found (cl-find name imports :key #'namespace--qsym-name
-			     :test #'equal)))
-	(unless (eq found qsym)
-	  (when found
-	    (push (cons qsym found) conflicts))
-	  (pcase (namespace--lookup ns name)
-	    (`nil
-	     (push qsym imports))
-	    ((and `(,_ . ,qsym2)
-		  (guard (not (eq qsym qsym2))))
-	     (push (cons qsym qsym2) conflicts))
-	    (`(:inherited . ,_)
-	     (push qsym imports))
-	    (_ (error "bug"))))))
+      (let ((id (namespace--qsym-id qsym)))
+	(pcase (cl-find id imports :key #'namespace--qsym-id
+			:test #'equal)
+	  (`nil)
+	  ((and qsym2
+		(guard (eq qsym qsym2))))
+	  (qsym2 (push (cons qsym qsym2) conflicts)))
+	(pcase (namespace--lookup ns id)
+	  (`nil)
+	  ((and `(,_ . ,qsym2)
+		(guard (eq qsym qsym2))))
+	  (`(,_ . ,qsym2)
+	   (push (cons qsym qsym2) conflicts))
+	  (_ (error "bug")))
+	(push qsym imports)))
     (when conflicts
       (namespace--conflict 'namespace-import-conflict ns conflicts))
     imports))
 
+;; FIXME: should probably use an alist (id . qsym)
 (defun namespace--import (ns qsyms)
   (let ((imports (namespace--check-import-conflicts ns qsyms))
 	(internal (namespace--internal ns)))
     (dolist (qsym imports)
-      (puthash (namespace--qsym-name qsym) qsym internal))))
+      (puthash (namespace--qsym-id qsym) qsym internal))))
 
 (defun namespace--check-export-conflicts (ns qsyms)
   (let ((importers (namespace--importers ns))
 	(conflicts '()))
     (dolist (qsym qsyms)
-      (let ((name (namespace--qsym-name qsym)))
+      (let ((name (namespace--qsym-id qsym)))
 	(dolist (ns2 importers)
 	  (pcase (namespace--lookup ns2 name)
+	    (`nil)
+	    ((and `(,_ . ,qsym2)
+		  (guard (eq qsym2 qsym))))
 	    (`(,_ . ,qsym2)
-	     (cond ((eq qsym2 qsym))
-		   ((gethash name (namespace--shadows ns2)))
-		   (t (push (cons qsym qsym2) conflicts))))
+	     (push (cons qsym qsym2) conflicts))
 	    (_ (error "bug"))))))
     (when conflicts
       (namespace--conflict 'namespace-export-conflict ns conflicts)))
   (let ((missing '())
 	(imports '()))
     (dolist (qsym qsyms)
-      (pcase (namespace--lookup ns (namespace--qsym-name qsym))
+      (pcase (namespace--lookup ns (namespace--qsym-id qsym))
 	(`nil (push qsym missing))
 	((and `(,_ . ,qsym2) (guard (eq qsym2 qsym))) qsym2)
 	(`(:inherited . ,qsym2) qsym2 (push qsym imports))
@@ -271,21 +276,22 @@
 	     (namespace--name ns) missing))
     imports))
 
+;; FIXME: should use an alist (id . qsym)
 (defun namespace--export (ns qsyms)
   (let* ((internal (namespace--internal ns))
 	 (external (namespace--external ns))
 	 (qsyms (cl-loop for qsym in qsyms
-			 unless (gethash (namespace--qsym-name qsym) external)
+			 unless (gethash (namespace--qsym-id qsym) external)
 			 collect qsym))
 	 (imports (namespace--check-export-conflicts ns qsyms)))
     (namespace--import ns imports)
     (dolist (qsym qsyms)
-      (let ((name (namespace--qsym-name qsym)))
+      (let ((name (namespace--qsym-id qsym)))
 	(remhash name internal)
 	(puthash name qsym external)))))
 
 (defun namespace--check-unintern-conflict (ns qsym)
-  (let ((name (namespace--qsym-name qsym)))
+  (let ((name (namespace--qsym-id qsym)))
     (when (gethash name (namespace--shadows ns))
       (let ((conflicts '()))
 	(dolist (ns2 (namespace--importers ns))
@@ -298,7 +304,7 @@
 			    (mapcar #'namespace--qsym-to-csym conflicts)))))))
 
 (defun namespace--unintern (ns qsym)
-  (let ((name (namespace--qsym-name qsym)))
+  (let ((name (namespace--qsym-id qsym)))
     (when (or (eq (gethash name (namespace--internal ns)) qsym)
 	      (eq (gethash name (namespace--external ns)) qsym))
       (namespace--check-unintern-conflict ns qsym)
@@ -388,13 +394,6 @@
     (cl-assert (not (eq ns2 ns)))
     (cl-assert (member ns (namespace--exporters ns2))))
   (maphash (lambda (name qsym)
-	     (cl-assert
-	      (or (let ((qsym2 (gethash name (namespace--internal ns))))
-		    (and qsym2 (eq qsym2 qsym)))
-		  (let ((qsym2 (gethash name (namespace--external ns))))
-		    (and qsym2 (eq qsym2 qsym))))))
-	   (namespace--shadows ns))
-  (maphash (lambda (name qsym)
 	     (namespace--validate-qsym qsym)
 	     (cl-assert (not (gethash name (namespace--external ns)))))
 	   (namespace--internal ns))
@@ -420,19 +419,9 @@
 			 key1 key2 common))))))
 
 (defun namespace--parse-options (options)
-  (let (shadows shadowing-imports use imports interns exports)
+  (let (use imports exports)
     (dolist (option options)
       (pcase option
-	((and `(:shadow . ,names)
-	      (guard (namespace--list-of-symbols-p names)))
-	 (setq shadows (append shadows (namespace--stringify-names names))))
-	((and `(:shadowing-import-from ,ns . ,names)
-	      (guard (and (symbolp ns)
-			  (namespace--list-of-symbols-p names))))
-	 (let ((assoc (assoc ns shadowing-imports))
-	       (names (namespace--stringify-names names)))
-	   (cond (assoc (setcdr assoc (append (cdr assoc) names)))
-		 (t (push (cons ns names) shadowing-imports)))))
 	((and `(:use . ,nss)
 	      (guard (namespace--list-of-symbols-p nss)))
 	 (setq use (cl-remove-duplicates (append nss use))))
@@ -443,24 +432,15 @@
 	       (names (namespace--stringify-names names)))
 	   (cond (assoc (setcdr assoc (append (cdr assoc) names)))
 		 (t (push (cons ns names) imports)))))
-	((and `(:intern . ,names)
-	      (guard (namespace--list-of-symbols-p names)))
-	 (setq interns (append interns (namespace--stringify-names names))))
 	((and `(:export . ,names)
 	      (guard (namespace--list-of-symbols-p names)))
 	 (setq exports (append exports (namespace--stringify-names names))))
 	(_ (error "Invalid namespace option: %S" option))))
     (namespace--check-disjoint
-     (cons :intern interns)
      (cons :export exports))
     (namespace--check-disjoint
-     (cons :intern interns)
-     (cons :shadow shadows)
-     (cons :import-from (cl-loop for (nil . names) in imports append names))
-     (cons :shadowing-import-from
-	   (cl-loop for (nil . names) in shadowing-imports
-		    append names)))
-    (list shadows shadowing-imports use imports interns exports)))
+     (cons :import-from (cl-loop for (nil . names) in imports append names)))
+    (list use imports exports)))
 
 
 
@@ -472,22 +452,6 @@
 	   (warn "Interning %s in namespace %s" name
 		 (namespace--name ns))
 	   (namespace--intern ns name)))))
-
-(defun namespace--add-shadows (ns shadows shadowing-imports)
-  (let ((old-shadows (namespace--shadowing-qsyms ns)))
-    (namespace--shadow ns shadows)
-    (dolist (name shadows)
-      (setq old-shadows (remove (namespace--lookup ns name) old-shadows)))
-    (cl-loop for (other-ns . names) in shadowing-imports do
-	     (let ((other-ns (namespace--find-namespace-or-lose other-ns)))
-	       (dolist (name names)
-		 (let ((qsym (namespace--find-or-make-qsym other-ns name)))
-		   (namespace--shadowing-import ns qsym)
-		   (setq old-shadows (remove qsym old-shadows))))))
-    (when old-shadows
-      (warn "Namespace %s also shadows the following symbols: %S"
-	    (namespace--name ns)
-	    (mapcar #'namespace--qsym-to-csym old-shadows)))))
 
 (defun namespace--add-use (ns use)
   (let ((old-exporters (namespace--exporters ns))
@@ -528,16 +492,11 @@
 
 ;; FIXME: clearing out internal symbols is probably a good idea but
 ;; conflict dections may need updjustments.
-(defun namespace--define (name shadows shadowing-imports use
-			       imports interns exports)
+(defun namespace--define (name use imports exports)
   (namespace--validate)
   (let* ((ns (namespace--find-or-make-namespace name)))
     (clrhash (namespace--internal ns))
-    (clrhash (namespace--shadows ns))
-    (namespace--add-shadows ns shadows shadowing-imports)
     (namespace--add-use ns use)
-    (dolist (name interns)
-      (namespace--intern ns name))
     (namespace--add-imports ns imports)
     (namespace--add-exports ns exports))
   (namespace--validate)
@@ -545,13 +504,11 @@
 
 (defmacro define-namespace (name options &rest body)
   (declare (indent 2))
-  (cl-destructuring-bind
-      (shadows shadowing-imports use imports interns exports)
+  (cl-destructuring-bind (use imports exports)
       (namespace--parse-options options)
     `(progn
        (eval-and-compile
-	 (namespace--define ',name ',shadows ',shadowing-imports
-			    ',use ',imports ',interns ',exports))
+	 (namespace--define ',name ',use ',imports ',exports))
        (namespace--progn ,name . ,body))))
 
 
@@ -568,7 +525,7 @@
     (_ nil)))
 
 (defun namespace--qsym-to-csym (qsym)
-  (let* ((name (namespace--qsym-name qsym))
+  (let* ((name (namespace--qsym-id qsym))
 	 (ns (namespace--qsym-ns qsym))
 	 (nsname (namespace--name ns)))
     (namespace--symconc nsname
@@ -597,7 +554,7 @@
 
 (defun namespace--fsyms (ns)
   (cl-loop for qsym in (namespace--accessible-qsyms ns)
-	   collect (cons (intern (namespace--qsym-name qsym))
+	   collect (cons (intern (namespace--qsym-id qsym))
 			 qsym)))
 
 ;; Expand and rewrite FORMS.
@@ -640,7 +597,7 @@
 
 (defun namespace--internal-fsyms (ns fsyms)
   (cl-loop for (nil . qsym) in fsyms
-	   when (let ((name (namespace--qsym-name qsym))
+	   when (let ((name (namespace--qsym-id qsym))
 		      (ns2 (namespace--qsym-ns qsym)))
 		  (and (eq ns2 ns)
 		       (not (namespace--name-external-p ns name))
@@ -866,7 +823,7 @@
 
 (defun namespace-map-accessible (ns fun)
   (dolist (qsym (namespace--accessible-qsyms ns))
-    (let ((name (namespace--qsym-name qsym)))
+    (let ((name (namespace--qsym-id qsym)))
       (funcall fun name))))
 
 (provide 'namespace)
