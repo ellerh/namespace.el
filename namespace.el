@@ -109,6 +109,12 @@
 				   (namespace--external e)))
 	      (namespace--hash-values sh)))))
 
+(defun namespace--map-qsyms (ns fun)
+  (maphash (lambda (_ qsym) (funcall fun qsym))
+	   (namespace--internal ns))
+  (maphash (lambda (_ qsym) (funcall fun qsym))
+	   (namespace--external ns)))
+
 (defun namespace--shadow (ns names)
   (let ((internal (namespace--internal ns))
 	(shadows (namespace--shadows ns)))
@@ -129,7 +135,6 @@
   (namespace--ct (namespace ns) (namespace--qsym qsym))
   (let ((internal (namespace--internal ns))
 	(shadows (namespace--shadows ns))
-	(external (namespace--external ns))
 	(name (namespace--qsym-name qsym)))
     (let* ((probe (namespace--lookup ns name)))
       (pcase probe
@@ -139,12 +144,9 @@
 		  `(:external . ,qsym2))
 	      (guard (eq qsym2 qsym)))
 	 qsym2)
-	((or `(:internal . ,_qsym2)
-	     `(:external . ,_qsym2))
-	 (remhash name shadows)
-	 ;; FIXME: use namespace--unintern for warnings
-	 (remhash name internal)
-	 (remhash name external)
+	((or `(:internal . ,qsym2)
+	     `(:external . ,qsym2))
+	 (namespace--unintern ns qsym2)
 	 (puthash name qsym internal))
 	(_
 	 (puthash name qsym internal)))
@@ -169,6 +171,8 @@
   'namespace-conflict)
 (define-error 'namespace-export-conflict "Namespace :export conflict"
   'namespace-conflict)
+(define-error 'namespace-unintern-conflict "Conflict revealed by unintern"
+  'namespace-conflict)
 
 (defun namespace--error (type &rest args)
   (signal type args))
@@ -187,7 +191,7 @@
 	  (when (and (not (eq qsym qsym2))
 		     (not (gethash name (namespace--shadows ns))))
 	    (push (cons qsym qsym2) conflicts)))
-	 (nil)
+	 (`nil)
 	 (_ (error "bug"))))
      (namespace--external ns2))
     (when conflicts
@@ -280,6 +284,28 @@
 	(remhash name internal)
 	(puthash name qsym external)))))
 
+(defun namespace--check-unintern-conflict (ns qsym)
+  (let ((name (namespace--qsym-name qsym)))
+    (when (gethash name (namespace--shadows ns))
+      (let ((conflicts '()))
+	(dolist (ns2 (namespace--importers ns))
+	  (let ((qsym2 (gethash name (namespace--external ns2))))
+	    (when qsym2
+	      (cl-pushnew qsym2 conflicts))))
+	(when (cdr conflicts)
+	  (namespace--error 'namespace-unintern-conflict
+			    (namespace--name ns)
+			    (mapcar #'namespace--qsym-to-csym conflicts)))))))
+
+(defun namespace--unintern (ns qsym)
+  (let ((name (namespace--qsym-name qsym)))
+    (when (or (eq (gethash name (namespace--internal ns)) qsym)
+	      (eq (gethash name (namespace--external ns)) qsym))
+      (namespace--check-unintern-conflict ns qsym)
+      (remhash name (namespace--shadows ns))
+      (remhash name (namespace--internal ns))
+      (remhash name (namespace--external ns)))))
+
 
 ;; symbol -> namespace
 (defvar namespace--table (make-hash-table))
@@ -298,10 +324,33 @@
   (or (namespace-find-namespace name)
       (error "Namespace doesn't exist: %S" name)))
 
-;; FIXME: deletion from importers/exporters is missing
-(defun namespace--delete (name)
+(defun namespace--delete-qsym (qsym)
+  (maphash (lambda (_ ns) (namespace--unintern ns qsym))
+	   namespace--table))
+
+(defun namespace--read-namespace-name (&optional prompt)
+  (read (completing-read (or prompt "Namespace: ")
+			 namespace--table nil t)))
+
+(defun namespace-delete-namespace (name)
+  (interactive (list (namespace--read-namespace-name "Delete namespace: ")))
   (namespace--ct (symbol name))
-  (remhash name namespace--table))
+  (namespace--validate)
+  (let* ((ns (namespace--find-namespace-or-lose name)))
+    (when (namespace--importers ns)
+      (warn "Namespace %s used by: %s." (namespace--name ns)
+	    (mapcar #'namespace--name (namespace--importers ns)))
+      (dolist (ns2 (namespace--importers ns))
+	(namespace--unuse1 ns2 ns)))
+    (namespace--unuse ns (namespace--exporters ns))
+    (maphash (lambda (_ ns2)
+	       (namespace--map-qsyms ns2
+				     (lambda (qsym)
+				       (when (eq (namespace--qsym-ns qsym) ns)
+					 (namespace--unintern ns2 qsym)))))
+	     namespace--table)
+    (remhash name namespace--table)
+    (namespace--validate)))
 
 
 (defun namespace--stringify-names (names)
