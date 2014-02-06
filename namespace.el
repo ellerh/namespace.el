@@ -320,6 +320,43 @@
 (defun namespace--list-of-symbols-p (x)
   (and (namespace--proper-list-p x)
        (cl-every #'symbolp x)))
+
+(defun namespace--validate-unique (ns)
+  (cl-assert (eq (namespace-find-namespace (namespace--name ns))
+		 ns)))
+
+(defun namespace--validate-qsym (qsym)
+  (namespace--validate-unique (namespace--qsym-ns qsym)))
+
+(defun namespace--validate-ns (ns)
+  (namespace--validate-unique ns)
+  (dolist (ns2 (namespace--exporters ns))
+    (namespace--validate-unique ns2)
+    (cl-assert (not (eq ns2 ns)))
+    (cl-assert (member ns (namespace--importers ns2))))
+  (dolist (ns2 (namespace--importers ns))
+    (namespace--validate-unique ns2)
+    (cl-assert (not (eq ns2 ns)))
+    (cl-assert (member ns (namespace--exporters ns2))))
+  (maphash (lambda (name qsym)
+	     (cl-assert
+	      (or (let ((qsym2 (gethash name (namespace--internal ns))))
+		    (and qsym2 (eq qsym2 qsym)))
+		  (let ((qsym2 (gethash name (namespace--external ns))))
+		    (and qsym2 (eq qsym2 qsym))))))
+	   (namespace--shadows ns))
+  (maphash (lambda (name qsym)
+	     (namespace--validate-qsym qsym)
+	     (cl-assert (not (gethash name (namespace--external ns)))))
+	   (namespace--internal ns))
+  (maphash (lambda (name qsym)
+	     (namespace--validate-qsym qsym)
+	     (cl-assert (not (gethash name (namespace--internal ns)))))
+	   (namespace--external ns)))
+
+(defun namespace--validate ()
+  (maphash (lambda (_ ns) (namespace--validate-ns ns))
+	   namespace--table))
 
 
 (defun namespace--check-disjoint (&rest args)
@@ -444,6 +481,7 @@
 ;; conflict dections may need updjustments.
 (defun namespace--define (name shadows shadowing-imports use
 			       imports interns exports)
+  (namespace--validate)
   (let* ((ns (namespace--find-or-make-namespace name)))
     (clrhash (namespace--internal ns))
     (clrhash (namespace--shadows ns))
@@ -452,8 +490,9 @@
     (dolist (name interns)
       (namespace--intern ns name))
     (namespace--add-imports ns imports)
-    (namespace--add-exports ns exports)
-    name))
+    (namespace--add-exports ns exports))
+  (namespace--validate)
+  name)
 
 (defmacro define-namespace (name options &rest body)
   (declare (indent 2))
@@ -547,7 +586,8 @@
 (defun namespace--add-internal (namespace names)
   (let ((ns (namespace--find-namespace-or-lose namespace)))
     (dolist (name names)
-      (namespace--intern ns name))))
+      (namespace--intern ns name)))
+  (namespace--validate))
 
 (defun namespace--internal-fsyms (ns fsyms)
   (cl-loop for (nil . qsym) in fsyms
