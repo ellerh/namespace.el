@@ -27,8 +27,7 @@
 (require 'cl-ns)
 
 (define-namespace a
-    ((:use )
-     (:export a c d))
+    ((:export a c d))
 
   (defun a (x y)
     (b (list 'a-a y x)))
@@ -45,7 +44,7 @@
   )
 
 (define-namespace b
-    ((:use a)
+    ((:import a)
      (:export e f))
 
   (defun e (x y)
@@ -55,26 +54,26 @@
     (funcall #'d (list 'b-f x)))
   )
 
-;;(define-namespace c
-;;    ((:use a)
-;;     ;;(:shadow a c)
-;;     (:export a))
-;;
-;;  (defun a (x y)
-;;    (a-a (list 'c-a x) y))
-;;
-;;  (defun c (x)
-;;    (funcall #'d (list 'c--c x)))
-;;  )
-;;
-;;(define-namespace d
-;;    ((:use a)
-;;     ;;(:shadowing-import-from c a)
-;;     (:export b))
-;;
-;;  (defun b (x y)
-;;    (a (list 'd-b x) y))
-;;  )
+(define-namespace c
+    ((:import (a (:except a c)))
+     (:export a))
+
+  (defun a (x y)
+    (a-a (list 'c-a x) y))
+
+  (defun c (x)
+    (funcall #'d (list 'c--c x)))
+  )
+
+
+(define-namespace d
+    ((:import (a (:except a))
+	      (c (:only a)))
+     (:export b))
+
+  (defun b (x y)
+    (a (list 'd-b x) y))
+  )
 
 (define-namespace e
     ((:export make-a
@@ -109,7 +108,7 @@
   )
 
 (define-namespace g
-    ((:use e)
+    ((:import e)
      (:export a b d))
 
   (defun a ()
@@ -125,7 +124,7 @@
   )
 
 (define-namespace h
-    ((:use cl)
+    ((:import cl)
      (:export a b c d e f))
 
   (defun a ()
@@ -184,14 +183,14 @@
 (ert-deftest test-b.2 ()
   (should (equal (b-f 1) '(a--b (a-d (b-f 1))))))
 
-;;(ert-deftest test-c.1 ()
-;;  (should (equal (c-a 1 2) '(a--b (a-a 2 (c-a 1))))))
-;;
-;;(ert-deftest test-c.2 ()
-;;  (should (equal (c--c 1) '(a--b (a-d (c--c 1))))))
-;;
-;;(ert-deftest test-d.1 ()
-;;  (should (equal (d-b 1 2) '(a--b (a-a 2 (c-a (d-b 1)))))))
+(ert-deftest test-c.1 ()
+  (should (equal (c-a 1 2) '(a--b (a-a 2 (c-a 1))))))
+
+(ert-deftest test-c.2 ()
+  (should (equal (c--c 1) '(a--b (a-d (c--c 1))))))
+
+(ert-deftest test-d.1 ()
+  (should (equal (d-b 1 2) '(a--b (a-a 2 (c-a (d-b 1)))))))
 
 (ert-deftest test-e.1 ()
   (should (equal (e-a-x (e-make-a :x 234 :y 456))
@@ -223,7 +222,7 @@
   (should (e--c? (e-make-c :x 234 :y 456))))
 
 (ert-deftest test-e.9 ()
-  ;;:expected-result :failed
+  :expected-result :failed
   (should (cl-typep (e-make-c :x 234 :y 456) 'e-c)))
 
 (ert-deftest test-f.1 ()
@@ -284,7 +283,7 @@
   (should (equal
 	   (condition-case e
 	       (eval '(define-namespace c1.c
-			((:use c1.a c1.b))))
+			((:import c1.a c1.b))))
 	     (namespace-use-conflict (cdr e)))
 	   '(c1.c ((c1.a-f . c1.b-f))))))
 
@@ -292,16 +291,16 @@
   (should (equal
 	   (condition-case e
 	       (eval '(define-namespace c2.a
-			((:use c1.a)
-			 (:import-from c1.b f))))
-	     (namespace-import-conflict (cdr e)))
-	   '(c2.a ((c1.b-f . c1.a-f))))))
+			((:import c1.a)
+			 (:import (c1.b (:only f))))))
+	     (namespace-use-conflict (cdr e)))
+	   '(c2.a ((c1.a-f . c1.b-f))))))
 
 (define-namespace c3.a
     ((:export f)))
 
 (define-namespace c3.b
-    ((:use c3.a)
+    ((:import c3.a)
      (:export h))
   (defun g () ))
 

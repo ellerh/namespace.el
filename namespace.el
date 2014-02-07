@@ -49,7 +49,7 @@
 
 (cl-defstruct (namespace--only-table (:include namespace--table)
 				     (:constructor namespace--only-table
-						   (table ))
+						   (table alist))
 				     (:copier nil))
   (alist '() :type list :read-only t))
 
@@ -194,25 +194,24 @@
 		    (namespace--name ns)
 		    (namespace--conflicts-to-csyms conflicts)))
 
-(defun namespace--check-use-conflicts (ns ns2)
+(defun namespace--check-use-conflicts (ns is)
   (let ((conflicts '()))
-    (maphash
-     (lambda (id qsym2)
-       (pcase (namespace--lookup ns id)
-	 (`(,_ . ,qsym)
-	  (when (not (eq qsym qsym2))
-	    (push (cons qsym qsym2) conflicts)))
-	 (`nil)
-	 (_ (error "bug"))))
-     (namespace--external ns2))
+    (namespace--table-map is
+			  (lambda (id qsym2)
+			    (pcase (namespace--lookup ns id)
+			      (`(,_ . ,qsym)
+			       (when (not (eq qsym qsym2))
+				 (push (cons qsym qsym2) conflicts)))
+			      (`nil)
+			      (_ (error "bug")))))
     (when conflicts
       (namespace--conflict 'namespace-use-conflict ns conflicts))))
 
-(defun namespace--use1 (ns ns2)
-  (unless (member ns2 (namespace--exporters ns))
-    (namespace--check-use-conflicts ns ns2)
-    (push ns2 (namespace--exporters ns))
-    (push ns (namespace--importers ns2))))
+(defun namespace--use1 (ns is)
+  (unless (member is (namespace--exporters ns))
+    (namespace--check-use-conflicts ns is)
+    (push is (namespace--exporters ns))
+    (push ns (namespace--importers (namespace--table-ns is)))))
 
 (defun namespace--use (ns nss)
   (dolist (ns2 nss)
@@ -385,14 +384,16 @@
 
 (defun namespace--validate-ns (ns)
   (namespace--validate-unique ns)
-  (dolist (ns2 (namespace--exporters ns))
-    (namespace--validate-unique ns2)
-    (cl-assert (not (eq ns2 ns)))
-    (cl-assert (member ns (namespace--importers ns2))))
+  (dolist (is (namespace--exporters ns))
+    (let ((ns2 (namespace--table-ns is)))
+      (namespace--validate-unique ns2)
+      (cl-assert (not (eq ns2 ns)))
+      (cl-assert (member ns (namespace--importers ns2)))))
   (dolist (ns2 (namespace--importers ns))
     (namespace--validate-unique ns2)
     (cl-assert (not (eq ns2 ns)))
-    (cl-assert (member ns (namespace--exporters ns2))))
+    (cl-assert (member ns (mapcar #'namespace--table-ns
+				  (namespace--exporters ns2)))))
   (maphash (lambda (name qsym)
 	     (namespace--validate-qsym qsym)
 	     (cl-assert (not (gethash name (namespace--external ns)))))
@@ -418,29 +419,66 @@
 			 "Parameters %S and %S not disjoint. Common items: %S"
 			 key1 key2 common))))))
 
+(defun namespace--sexp-filter-p (sexp)
+  (pcase sexp
+    ((and `(:only . ,syms)
+	  (guard (namespace--list-of-symbols-p syms)))
+     syms ; ignorable
+     t)
+    ((and `(:except . ,syms)
+	  (guard (namespace--list-of-symbols-p syms)))
+     syms ; ignorable
+     t)
+    (_ nil)))
+
+(defun namespace--parse-filter (sexp)
+  (pcase sexp
+    ((and `(:only . ,syms)
+	  (guard (namespace--list-of-symbols-p syms)))
+     `(:only . ,(mapcar #'symbol-name syms)))
+    ((and `(:except . ,syms)
+	  (guard (namespace--list-of-symbols-p syms)))
+     `(:except . ,(mapcar #'symbol-name syms)))
+    (_ (error "bug"))))
+
+(defun namespace--sexp-import-set-p (sexp)
+  (pcase sexp
+    ((and sym (guard (symbolp sym)))
+     sym ; ignorable
+     t)
+    ((and `(,sym . ,filters)
+	  (guard (symbolp sym))
+	  (guard (cl-every #'namespace--sexp-filter-p filters)))
+     sym filters ; ignorable
+     t)
+    (_ nil)))
+
+(defun namespace--parse-import-set (sexp)
+  (pcase sexp
+    ((and sym (guard (symbolp sym)))
+     (list sym))
+    ((and `(,sym . ,filters)
+	  (guard (symbolp sym))
+	  (guard (cl-every #'namespace--sexp-filter-p filters)))
+     (cons sym (mapcar #'namespace--parse-filter filters)))
+    (_ (error "bug"))))
+
 (defun namespace--parse-options (options)
-  (let (use imports exports)
+  (let (import-sets exports)
     (dolist (option options)
       (pcase option
-	((and `(:use . ,nss)
-	      (guard (namespace--list-of-symbols-p nss)))
-	 (setq use (cl-remove-duplicates (append nss use))))
-	((and `(:import-from ,ns . ,names)
-	      (guard (and (symbolp ns)
-			  (namespace--list-of-symbols-p names))))
-	 (let ((assoc (assoc ns imports))
-	       (names (namespace--stringify-names names)))
-	   (cond (assoc (setcdr assoc (append (cdr assoc) names)))
-		 (t (push (cons ns names) imports)))))
+	((and `(:import . ,iss)
+	      (guard (cl-every #'namespace--sexp-import-set-p iss)))
+	 (setq import-sets
+	       (append import-sets
+		       (mapcar #'namespace--parse-import-set iss))))
 	((and `(:export . ,names)
 	      (guard (namespace--list-of-symbols-p names)))
 	 (setq exports (append exports (namespace--stringify-names names))))
 	(_ (error "Invalid namespace option: %S" option))))
     (namespace--check-disjoint
      (cons :export exports))
-    (namespace--check-disjoint
-     (cons :import-from (cl-loop for (nil . names) in imports append names)))
-    (list use imports exports)))
+    (list import-sets exports)))
 
 
 
@@ -453,13 +491,15 @@
 		 (namespace--name ns))
 	   (namespace--intern ns name)))))
 
+;; FIXME: unuse doesn't work
 (defun namespace--add-use (ns use)
-  (let ((old-exporters (namespace--exporters ns))
+  (let ((old-exporters
+	 (mapcar #'namespace--table-ns (namespace--exporters ns)))
 	(new-exporters (mapcar #'namespace--find-namespace-or-lose use)))
     (namespace--use ns new-exporters)
     (let ((unused (cl-set-difference old-exporters new-exporters)))
       (when unused
-	(namespace--unuse ns unused)
+	;;(namespace--unuse ns unused)
 	(warn "Namespace %s previously used: %s"
 	      (namespace--name ns)
 	      (mapcar #'namespace--name unused))))))
@@ -472,14 +512,25 @@
 	  (t
 	   (cdr x)))))
 
-(defun namespace--add-imports (ns imports)
-  (cl-loop for (other-ns . names) in imports do
-	   (let* ((other-ns (namespace--find-namespace-or-lose other-ns))
-		  (qsyms (mapcar (lambda (name)
-				   (namespace--find-qsym-or-lose other-ns
-								 name))
-				 names)))
-	     (namespace--import ns qsyms))))
+(defun namespace--apply-filters (is filters)
+  (pcase filters
+    (`nil is)
+    (`((:only . ,ids) . ,more)
+     (let ((alist (cl-loop for id in ids collect
+			   (cons id (or (namespace--table-lookup is id)
+					(error "Id %S not exported in %S"
+					       id (car filters)))))))
+     (namespace--apply-filters (namespace--only-table is alist)
+			       more)))
+    (`((:except . ,ids) . ,more)
+     (namespace--apply-filters (namespace--except-table is ids)
+			       more))))
+
+(defun namespace--add-import-set (ns is)
+  (cl-destructuring-bind (ns2 . filters) is
+    (namespace--use1 ns (namespace--apply-filters
+			 (namespace--find-namespace-or-lose ns2)
+			 filters))))
 
 (defun namespace--add-exports (ns exports)
   (let* ((old-exports (namespace--exported-qsyms ns))
@@ -492,23 +543,23 @@
 
 ;; FIXME: clearing out internal symbols is probably a good idea but
 ;; conflict dections may need updjustments.
-(defun namespace--define (name use imports exports)
+(defun namespace--define (name import-sets exports)
   (namespace--validate)
   (let* ((ns (namespace--find-or-make-namespace name)))
     (clrhash (namespace--internal ns))
-    (namespace--add-use ns use)
-    (namespace--add-imports ns imports)
+    (dolist (is import-sets)
+      (namespace--add-import-set ns is))
     (namespace--add-exports ns exports))
   (namespace--validate)
   name)
 
 (defmacro define-namespace (name options &rest body)
   (declare (indent 2))
-  (cl-destructuring-bind (use imports exports)
+  (cl-destructuring-bind (import-sets exports)
       (namespace--parse-options options)
     `(progn
        (eval-and-compile
-	 (namespace--define ',name ',use ',imports ',exports))
+	 (namespace--define ',name ',import-sets ',exports))
        (namespace--progn ,name . ,body))))
 
 

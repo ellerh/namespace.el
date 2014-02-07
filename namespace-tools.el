@@ -38,7 +38,7 @@
 	      map-accessible)))
 
 (define-namespace namespace-tools
-    ((:use cl namespace)
+    ((:import cl namespace)
      (:export find-definition
 	      eval-last-sexp
 	      activate))
