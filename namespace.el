@@ -60,22 +60,28 @@
 			 (:conc-name namespace--))
   (name (error "Required argument missing") :type symbol :read-only t)
   ;; namespaces (or namespace-tables) used by this namespace
-  (exporters '() :type list)
+  (imports '() :type list)
   ;; namespaces using this namespace
-  (importers '() :type list)
+  (users '() :type list)
   ;; id -> qsym
   (internal (make-hash-table :test 'equal) :type hash-table :read-only t)
   ;; id -> qsym
   (external (make-hash-table :test 'equal) :type hash-table :read-only t)
+  ;; set if we had an export conflict
+  (inconsistent nil :type boolean)
   )
 
 (defmacro namespace--ct (&rest decls)
   `(progn
      ,@(cl-loop for decl in decls collect
 		(cl-destructuring-bind (type &rest names) decl
-		  `(progn
-		     ,@(cl-loop for name in names collect
-				`(cl-check-type ,name ,type)))))))
+		  (let ((type (cl-case type
+				(id 'string)
+				(qsym 'namespace--qsym)
+				(t type))))
+		    `(progn
+		       ,@(cl-loop for name in names collect
+				  `(cl-check-type ,name ,type))))))))
 
 
 (defun namespace--table-lookup (table id)
@@ -126,18 +132,29 @@
     (namespace--table (namespace--table-ns (namespace--table-table table)))))
 
 
+(defun namespace--find-internal (ns id)
+  (namespace--ct (namespace ns) (id id))
+  (gethash id (namespace--internal ns)))
+
+(defun namespace--find-external (ns id)
+  (namespace--ct (namespace ns) (id id))
+  (gethash id (namespace--external ns)))
+
+(defun namespace--find-imported (ns id)
+  (namespace--ct (namespace ns) (id id))
+  (cl-dolist (table (namespace--imports ns))
+    (let ((qsym (namespace--table-lookup table id)))
+      (when qsym
+	(cl-return qsym)))))
+
 (defun namespace--lookup (ns id)
   (namespace--ct (namespace ns) (string id))
-  (or (let ((qsym (gethash id (namespace--internal ns))))
-	(and qsym
-	     (cons :internal qsym)))
-      (let ((qsym (gethash id (namespace--external ns))))
-	(and qsym
-	     (cons :external qsym)))
-      (cl-dolist (table (namespace--exporters ns))
-	(let ((qsym (namespace--table-lookup table id)))
-	  (when qsym
-	    (cl-return (cons :inherited qsym)))))))
+  (cl-macrolet ((tag (tag test)
+		     `(let ((qsym ,test))
+			(and qsym (cons ,tag qsym)))))
+    (or (tag :internal (namespace--find-internal ns id))
+	(tag :external (namespace--find-external ns id))
+	(tag :imported (namespace--find-imported ns id)))))
 
 (defun namespace--intern (ns id)
   (let ((existing (namespace--lookup ns id)))
@@ -155,7 +172,7 @@
 	(external (namespace--external ns)))
     (append (namespace--hash-values internal)
 	    (namespace--hash-values external)
-	    (cl-loop for e in (namespace--exporters ns)
+	    (cl-loop for e in (namespace--imports ns)
 		     append (namespace--table-values e)))))
 
 (defun namespace--map-qsyms (ns fun)
@@ -164,11 +181,13 @@
   (maphash (lambda (_ qsym) (funcall fun qsym))
 	   (namespace--external ns)))
 
+
 (defun namespace--conflicts-to-string (conflicts)
-  (cl-loop for (q1 . q2) in conflicts
-	   concat (format "%s %s\n"
+  (cl-loop for ((q1 . q2) . more) on conflicts
+	   concat (format "%s %s"
 			  (namespace--qsym-to-csym q1)
-			  (namespace--qsym-to-csym q2))))
+			  (namespace--qsym-to-csym q2))
+	   when more concat "\n"))
 
 (defun namespace--conflicts-to-csyms (conflicts)
   (cl-loop for (q1 . q2) in conflicts
@@ -177,139 +196,125 @@
 
 (define-error 'namespace-error "Namespace error")
 (define-error 'namespace-conflict "Name conflict" 'namespace-error)
-(define-error 'namespace-use-conflict "Namespace :use conflict"
-  'namespace-conflict)
-(define-error 'namespace-import-conflict "Namespace :import-from conflict"
+(define-error 'namespace-import-conflict "Namespace :import conflict"
   'namespace-conflict)
 (define-error 'namespace-export-conflict "Namespace :export conflict"
   'namespace-conflict)
-(define-error 'namespace-unintern-conflict "Conflict revealed by unintern"
-  'namespace-conflict)
+(define-error 'namespace-inconsistent "Namespace marked as inconsistent"
+  'namespace-error)
 
 (defun namespace--error (type &rest args)
-  (signal type args))
+  (cl-ecase type
+    (namespace-import-conflict
+     (cl-destructuring-bind (ns conflicts) args
+       (signal type (list (namespace--name ns)
+			  (namespace--conflicts-to-csyms conflicts)))))
+    (namespace-inconsistent
+     (cl-destructuring-bind (ns) args
+       (signal type (list (namespace--name ns)))))))
 
-(defun namespace--conflict (type ns conflicts)
-  (namespace--error type
-		    (namespace--name ns)
-		    (namespace--conflicts-to-csyms conflicts)))
+(defvar namespace--warning-handler nil)
 
-(defun namespace--check-use-conflicts (ns is)
+(defun namespace--warning-to-sexp (w)
+  (cons
+   (car w)
+   (cl-ecase (car w)
+     (namespace-export-conflict
+      (cl-destructuring-bind (ns cs) (cdr w)
+	(list (namespace--name ns)
+	      (cl-loop for (ns2 . cs2) in cs collect
+		       (list (namespace--name ns2)
+			     (namespace--conflicts-to-csyms cs2))))))
+     (namespace-mark-inconsistent
+      (cl-destructuring-bind (ns) (cdr w)
+	(list (namespace--name ns))))
+     (namespace-previously-exported
+      (cl-destructuring-bind (ns qsyms) (cdr w)
+	(list (namespace--name ns)
+	      (mapcar #'namespace--qsym-to-csym qsyms)))))))
+
+(defun namespace--warning-to-string (w)
+  (pcase w
+    (`(namespace-export-conflict ,ns ,cs)
+     (concat
+      (format "Export conflicts after re-defining namespace %s."
+	      (namespace--name ns))
+      (cl-loop for (ns2 . cs2) in cs concat
+	       (format "\n   In namespace %s: %s"
+		       (namespace--name ns2)
+		       (namespace--conflicts-to-csyms cs2)))))
+    (`(namespace-mark-inconsistent ,ns)
+     (format "Marking namespace %s as inconsistent" (namespace--name ns)))
+    (`(namespace-previously-exported ,ns ,qsyms)
+      (format "Namespace %s previously exported: %s"
+	      (namespace--name ns) (mapcar #'namespace--qsym-to-csym qsyms)))
+    (_ (error "no pcase match: %s" w))))
+
+(defun namespace--warn (type &rest args)
+  (cond (namespace--warning-handler
+	 (funcall namespace--warning-handler (cons type args)))
+	(t
+	 (display-warning 'namespace
+	  (namespace--warning-to-string (cons type args))))))
+
+(defmacro namespace--collect-warnings (form)
+  `(let* ((fun (lambda () ,form))
+	  (warnings '())
+	  (namespace--warning-handler (lambda (w)
+					(push (namespace--warning-to-sexp w)
+					      warnings)))
+	  (result (funcall fun)))
+     (list (reverse warnings) result)))
+
+(defun namespace--imports-conflicts (imports)
   (let ((conflicts '()))
-    (namespace--table-map is
-			  (lambda (id qsym2)
-			    (pcase (namespace--lookup ns id)
-			      (`(,_ . ,qsym)
-			       (when (not (eq qsym qsym2))
-				 (push (cons qsym qsym2) conflicts)))
-			      (`nil)
-			      (_ (error "bug")))))
+    (cl-loop for (is . rest) on imports do
+	     (namespace--table-map
+	      is
+	      (lambda (id qsym)
+		(pcase (cl-loop for is2 in rest
+				when (namespace--table-lookup is2 id)
+				return it)
+		  (`nil)
+		  ((and qsym2 (guard (eq qsym qsym2))))
+		  (qsym2 (push (cons qsym qsym2) conflicts))))))
+    conflicts))
+
+(defun namespace--check-import-conflicts (ns iss)
+  (let ((conflicts (namespace--imports-conflicts iss)))
     (when conflicts
-      (namespace--conflict 'namespace-use-conflict ns conflicts))))
+      (namespace--error 'namespace-import-conflict ns conflicts))))
 
-(defun namespace--use1 (ns is)
-  (unless (member is (namespace--exporters ns))
-    (namespace--check-use-conflicts ns is)
-    (push is (namespace--exporters ns))
-    (push ns (namespace--importers (namespace--table-ns is)))))
+;; Make NS and recursively its users as inconsistent
+(defun namespace--mark-inconsistent (ns)
+  (unless (namespace--inconsistent ns)
+    (setf (namespace--inconsistent ns) t)
+    (namespace--warn 'namespace-mark-inconsistent ns))
+  (dolist (ns2 (namespace--users ns))
+    (namespace--mark-inconsistent ns2)))
 
-(defun namespace--use (ns nss)
-  (dolist (ns2 nss)
-    (namespace--use1 ns ns2)))
-
-(defun namespace--check-import-conflicts (ns qsyms)
-  (let ((imports '())
-	(conflicts '()))
-    (dolist (qsym qsyms)
-      (let ((id (namespace--qsym-id qsym)))
-	(pcase (cl-find id imports :key #'namespace--qsym-id
-			:test #'equal)
-	  (`nil)
-	  ((and qsym2
-		(guard (eq qsym qsym2))))
-	  (qsym2 (push (cons qsym qsym2) conflicts)))
-	(pcase (namespace--lookup ns id)
-	  (`nil)
-	  ((and `(,_ . ,qsym2)
-		(guard (eq qsym qsym2))))
-	  (`(,_ . ,qsym2)
-	   (push (cons qsym qsym2) conflicts))
-	  (_ (error "bug")))
-	(push qsym imports)))
+(defun namespace--check-export-conflicts (ns)
+  (cl-assert (zerop (hash-table-count (namespace--internal ns))))
+  (let ((conflicts '()))
+    (dolist (ns2 (namespace--users ns))
+      (let ((cs (namespace--imports-conflicts (namespace--imports ns2))))
+	(when cs
+	  (push (cons ns2 cs) conflicts)))
+      (maphash (lambda (id qsym)
+		 (let ((qsym2 (namespace--find-imported ns2 id)))
+		   (when qsym2
+		     (push (cons ns2 (list (cons qsym2 qsym))) conflicts))))
+	       (namespace--internal ns2))
+      (maphash (lambda (id qsym)
+		 (let ((qsym2 (namespace--find-imported ns2 id)))
+		   (when (and qsym2
+			      (not (eq qsym qsym2)))
+		     (push (cons ns2 (list (cons qsym2 qsym))) conflicts))))
+	       (namespace--external ns2)))
     (when conflicts
-      (namespace--conflict 'namespace-import-conflict ns conflicts))
-    imports))
-
-;; FIXME: should probably use an alist (id . qsym)
-(defun namespace--import (ns qsyms)
-  (let ((imports (namespace--check-import-conflicts ns qsyms))
-	(internal (namespace--internal ns)))
-    (dolist (qsym imports)
-      (puthash (namespace--qsym-id qsym) qsym internal))))
-
-(defun namespace--check-export-conflicts (ns qsyms)
-  (let ((importers (namespace--importers ns))
-	(conflicts '()))
-    (dolist (qsym qsyms)
-      (let ((name (namespace--qsym-id qsym)))
-	(dolist (ns2 importers)
-	  (pcase (namespace--lookup ns2 name)
-	    (`nil)
-	    ((and `(,_ . ,qsym2)
-		  (guard (eq qsym2 qsym))))
-	    (`(,_ . ,qsym2)
-	     (push (cons qsym qsym2) conflicts))
-	    (_ (error "bug"))))))
-    (when conflicts
-      (namespace--conflict 'namespace-export-conflict ns conflicts)))
-  (let ((missing '())
-	(imports '()))
-    (dolist (qsym qsyms)
-      (pcase (namespace--lookup ns (namespace--qsym-id qsym))
-	(`nil (push qsym missing))
-	((and `(,_ . ,qsym2) (guard (eq qsym2 qsym))) qsym2)
-	(`(:inherited . ,qsym2) qsym2 (push qsym imports))
-	(_ (error "bug?"))))
-    (when missing
-      (error "Export of non-accessible symbols from namespace %s: %S"
-	     (namespace--name ns) missing))
-    imports))
-
-;; FIXME: should use an alist (id . qsym)
-(defun namespace--export (ns qsyms)
-  (let* ((internal (namespace--internal ns))
-	 (external (namespace--external ns))
-	 (qsyms (cl-loop for qsym in qsyms
-			 unless (gethash (namespace--qsym-id qsym) external)
-			 collect qsym))
-	 (imports (namespace--check-export-conflicts ns qsyms)))
-    (namespace--import ns imports)
-    (dolist (qsym qsyms)
-      (let ((name (namespace--qsym-id qsym)))
-	(remhash name internal)
-	(puthash name qsym external)))))
-
-(defun namespace--check-unintern-conflict (ns qsym)
-  (let ((name (namespace--qsym-id qsym)))
-    (when (gethash name (namespace--shadows ns))
-      (let ((conflicts '()))
-	(dolist (ns2 (namespace--importers ns))
-	  (let ((qsym2 (gethash name (namespace--external ns2))))
-	    (when qsym2
-	      (cl-pushnew qsym2 conflicts))))
-	(when (cdr conflicts)
-	  (namespace--error 'namespace-unintern-conflict
-			    (namespace--name ns)
-			    (mapcar #'namespace--qsym-to-csym conflicts)))))))
-
-(defun namespace--unintern (ns qsym)
-  (let ((name (namespace--qsym-id qsym)))
-    (when (or (eq (gethash name (namespace--internal ns)) qsym)
-	      (eq (gethash name (namespace--external ns)) qsym))
-      (namespace--check-unintern-conflict ns qsym)
-      (remhash name (namespace--shadows ns))
-      (remhash name (namespace--internal ns))
-      (remhash name (namespace--external ns)))))
+      (namespace--warn 'namespace-export-conflict ns conflicts)
+      (cl-loop for (ns2) in conflicts
+	       do (namespace--mark-inconsistent ns2)))))
 
 
 ;; symbol -> namespace
@@ -329,33 +334,9 @@
   (or (namespace-find-namespace name)
       (error "Namespace doesn't exist: %S" name)))
 
-(defun namespace--delete-qsym (qsym)
-  (maphash (lambda (_ ns) (namespace--unintern ns qsym))
-	   namespace--table))
-
 (defun namespace--read-namespace-name (&optional prompt)
   (read (completing-read (or prompt "Namespace: ")
 			 namespace--table nil t)))
-
-(defun namespace-delete-namespace (name)
-  (interactive (list (namespace--read-namespace-name "Delete namespace: ")))
-  (namespace--ct (symbol name))
-  (namespace--validate)
-  (let* ((ns (namespace--find-namespace-or-lose name)))
-    (when (namespace--importers ns)
-      (warn "Namespace %s used by: %s." (namespace--name ns)
-	    (mapcar #'namespace--name (namespace--importers ns)))
-      (dolist (ns2 (namespace--importers ns))
-	(namespace--unuse1 ns2 ns)))
-    (namespace--unuse ns (namespace--exporters ns))
-    (maphash (lambda (_ ns2)
-	       (namespace--map-qsyms ns2
-				     (lambda (qsym)
-				       (when (eq (namespace--qsym-ns qsym) ns)
-					 (namespace--unintern ns2 qsym)))))
-	     namespace--table)
-    (remhash name namespace--table)
-    (namespace--validate)))
 
 
 (defun namespace--stringify-names (names)
@@ -384,27 +365,32 @@
 
 (defun namespace--validate-ns (ns)
   (namespace--validate-unique ns)
-  (dolist (is (namespace--exporters ns))
+  (dolist (is (namespace--imports ns))
     (let ((ns2 (namespace--table-ns is)))
       (namespace--validate-unique ns2)
       (cl-assert (not (eq ns2 ns)))
-      (cl-assert (member ns (namespace--importers ns2)))))
-  (dolist (ns2 (namespace--importers ns))
+      (cl-assert (member ns (namespace--users ns2)))))
+  (dolist (ns2 (namespace--users ns))
     (namespace--validate-unique ns2)
     (cl-assert (not (eq ns2 ns)))
     (cl-assert (member ns (mapcar #'namespace--table-ns
-				  (namespace--exporters ns2)))))
-  (maphash (lambda (name qsym)
+				  (namespace--imports ns2)))))
+  (maphash (lambda (id qsym)
+	     (namespace--ct (id id) (qsym qsym))
 	     (namespace--validate-qsym qsym)
-	     (cl-assert (not (gethash name (namespace--external ns)))))
+	     (cl-assert (not (namespace--find-external ns id)))
+	     (cl-assert (not (namespace--find-imported ns id))))
 	   (namespace--internal ns))
-  (maphash (lambda (name qsym)
+  (maphash (lambda (id qsym)
+	     (namespace--ct (id id) (qsym qsym))
 	     (namespace--validate-qsym qsym)
-	     (cl-assert (not (gethash name (namespace--internal ns)))))
+	     (cl-assert (not (gethash id (namespace--internal ns)))))
 	   (namespace--external ns)))
 
 (defun namespace--validate ()
-  (maphash (lambda (_ ns) (namespace--validate-ns ns))
+  (maphash (lambda (_ ns)
+	     (unless (namespace--inconsistent ns)
+	       (namespace--validate-ns ns)))
 	   namespace--table))
 
 
@@ -491,19 +477,6 @@
 		 (namespace--name ns))
 	   (namespace--intern ns name)))))
 
-;; FIXME: unuse doesn't work
-(defun namespace--add-use (ns use)
-  (let ((old-exporters
-	 (mapcar #'namespace--table-ns (namespace--exporters ns)))
-	(new-exporters (mapcar #'namespace--find-namespace-or-lose use)))
-    (namespace--use ns new-exporters)
-    (let ((unused (cl-set-difference old-exporters new-exporters)))
-      (when unused
-	;;(namespace--unuse ns unused)
-	(warn "Namespace %s previously used: %s"
-	      (namespace--name ns)
-	      (mapcar #'namespace--name unused))))))
-
 (defun namespace--find-qsym-or-lose (ns name)
   (namespace--ct (namespace ns) (string name))
   (let ((x (namespace--lookup ns name)))
@@ -526,30 +499,53 @@
      (namespace--apply-filters (namespace--except-table is ids)
 			       more))))
 
-(defun namespace--add-import-set (ns is)
-  (cl-destructuring-bind (ns2 . filters) is
-    (namespace--use1 ns (namespace--apply-filters
-			 (namespace--find-namespace-or-lose ns2)
-			 filters))))
+(defun namespace--set-imports (ns iss)
+  (let ((iss (cl-loop for is in iss collect
+		      (cl-destructuring-bind (ns . filters) is
+			(let ((ns (namespace--find-namespace-or-lose ns)))
+			  (when (namespace--inconsistent ns)
+			    (namespace--error 'namespace-inconsistent ns))
+			  (namespace--apply-filters ns filters))))))
+    (namespace--check-import-conflicts ns iss)
+    (let ((old-imports (namespace--imports ns)))
+      (setf (namespace--imports ns) iss)
+      (let ((old-using (mapcar #'namespace--table-ns old-imports))
+	    (new-using (mapcar #'namespace--table-ns iss)))
+	(dolist (ns2 old-using)
+	  (unless (memq ns2 new-using)
+	    (setf (namespace--users ns2)
+		  (delete ns (namespace--users ns2)))))
+	(dolist (ns2 new-using)
+	  (cl-pushnew ns (namespace--users ns2)))))))
 
-(defun namespace--add-exports (ns exports)
+
+(defun namespace--set-exports (ns exports)
+  (cl-assert (zerop (hash-table-count (namespace--internal ns))))
   (let* ((old-exports (namespace--exported-qsyms ns))
-	 (new-exports (cl-loop for name in exports
-			       collect (namespace--intern ns name)))
+	 (new-exports (cl-loop for id in exports collect
+			       (or (namespace--find-external ns id)
+				   (namespace--find-imported ns id)
+				   (namespace--qsym ns id))))
 	 (diff (cl-set-difference old-exports new-exports)))
-    (namespace--export ns new-exports)
     (when diff
-      (warn "Namspace %s also exports: %s" (namespace--name ns) diff))))
+      (namespace--warn 'namespace-previously-exported ns diff))
+    (let ((external (namespace--external ns)))
+      (clrhash external)
+      (dolist (qsym new-exports)
+	(puthash (namespace--qsym-id qsym) qsym external)))
+    (namespace--check-export-conflicts ns)))
 
 ;; FIXME: clearing out internal symbols is probably a good idea but
 ;; conflict dections may need updjustments.
-(defun namespace--define (name import-sets exports)
+(defun namespace--define (name imports exports)
   (namespace--validate)
   (let* ((ns (namespace--find-or-make-namespace name)))
+    (namespace--set-imports ns imports)
+    ;; no errors should happend after this point
     (clrhash (namespace--internal ns))
-    (dolist (is import-sets)
-      (namespace--add-import-set ns is))
-    (namespace--add-exports ns exports))
+    (namespace--set-exports ns exports)
+    (setf (namespace--inconsistent ns) nil)
+    (namespace--validate-ns ns))
   (namespace--validate)
   name)
 

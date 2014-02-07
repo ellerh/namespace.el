@@ -65,7 +65,6 @@
     (funcall #'d (list 'c--c x)))
   )
 
-
 (define-namespace d
     ((:import (a (:except a))
 	      (c (:only a)))
@@ -284,7 +283,7 @@
 	   (condition-case e
 	       (eval '(define-namespace c1.c
 			((:import c1.a c1.b))))
-	     (namespace-use-conflict (cdr e)))
+	     (namespace-import-conflict (cdr e)))
 	   '(c1.c ((c1.a-f . c1.b-f))))))
 
 (ert-deftest test-conflict.2 ()
@@ -293,7 +292,7 @@
 	       (eval '(define-namespace c2.a
 			((:import c1.a)
 			 (:import (c1.b (:only f))))))
-	     (namespace-use-conflict (cdr e)))
+	     (namespace-import-conflict (cdr e)))
 	   '(c2.a ((c1.a-f . c1.b-f))))))
 
 (define-namespace c3.a
@@ -301,16 +300,74 @@
 
 (define-namespace c3.b
     ((:import c3.a)
-     (:export h))
-  (defun g () ))
+     (:export g)))
+
+(define-namespace c3.c
+    ((:import c3.a c3.b)))
+
+(define-namespace c3.d
+    ((:import c3.a))
+  (defun h () ))
 
 (ert-deftest test-conflict.3 ()
+  "Redefine c3.a so that it causes conflicts in c3.b abd c3.c."
+  (should (equal
+	   (namespace--collect-warnings
+	    (eval '(define-namespace c3.a
+		       ((:export f g)))))
+	   '(((namespace-export-conflict c3.a
+					 ((c3.b
+					   ((c3.a-g . c3.b-g)))
+					  (c3.c
+					   ((c3.a-g . c3.b-g)))))
+	      (namespace-mark-inconsistent c3.b)
+	      (namespace-mark-inconsistent c3.c))
+	     nil)))
+  (should (namespace--inconsistent
+	   (namespace--find-namespace-or-lose 'c3.b)))
+  (should (namespace--inconsistent
+	   (namespace--find-namespace-or-lose 'c3.c)))
+  )
+
+(ert-deftest test-conflict.4 ()
+  "Redefine c3.a so that it causes conflicts with c3.d's internal h."
+  (should (equal
+	   (namespace--collect-warnings
+	    (eval '(define-namespace c3.a
+		       ((:export f h)))))
+	   '(((namespace-previously-exported c3.a (c3.a-g))
+	      (namespace-export-conflict c3.a
+					 ((c3.d
+					   ((c3.a-h . c3.d--h)))))
+	      (namespace-mark-inconsistent c3.d))
+	     nil))))
+
+(ert-deftest test-conflict.5 ()
+  "Incosistent namespaces can't be used as imports."
+  (should (namespace--inconsistent (namespace--find-namespace-or-lose 'c3.b)))
   (should (equal
 	   (condition-case e
-	       (eval '(define-namespace c3.a
-			((:export f g h))))
-	     (namespace-export-conflict (cdr e)))
-	   '(c3.a ((c3.a--h . c3.b-h)
-		   (c3.a--g . c3.b--g))))))
+	       (eval '(define-namespace c5.a
+			  ((:import c3.b))))
+	     (namespace-inconsistent (cdr e)))
+	   '(c3.b))))
+
+(define-namespace c6.a
+    ((:export f)))
+
+(define-namespace c6.b
+    ((:export g)))
+
+(define-namespace c6.c
+    ((:import c6.a c6.b)))
+
+(ert-deftest test-conflict.6 ()
+  "Redefine c6.c so that it no longer uses c6.b.
+That used to trigger an failed assertion during validate because
+namespace--users was not being updated properly."
+  (should (equal
+	   (eval '(define-namespace c6.c
+		      ((:import c6.a))))
+	   nil)))
 
 ;;; namespace-test.el ends here
