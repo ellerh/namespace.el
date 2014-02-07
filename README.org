@@ -1,4 +1,3 @@
-* Introduction
 
 The purpose of namespace.el is to manage function names in Emacs Lisp
 code.  The idea is to automate the Emacs convention of prefixing each
@@ -16,7 +15,7 @@ function name with the name of the package.
    (defun g (i) (message "g called: %s" i)))
 
  (define-namespace bar
-     ((:use foo)
+     ((:import foo)
       (:export h))
 
    (defun h () (f 42)))
@@ -30,10 +29,10 @@ exports the symbol f.  Inside the namespace foo we define two
 functions: f and g.  The function f just calls g and g prints a
 message.
 
-The namespace bar uses the namespace foo and also exports the symbol
-h.  Inside bar we define the function h which calls the function f.
-The symbol f is "accessible" in namespace bar because f is exported
-from namespace foo and bar uses foo.
+The namespace bar imports the exported symbols from the namespace foo
+and exports the symbol h.  Inside bar we define the function h which
+calls the function f.  The symbol f is "accessible" in namespace bar
+because f is exported from namespace foo and bar imports it.
 
 Outside of any namespace we can call exported functions in the usual
 way by prefixing the function name with the name of the namespace,
@@ -50,13 +49,9 @@ it use "make uninstall".
 
 * Exporting and importing symbols
 
-The options of the define-namespace form: :export, :use, :import-from,
-:shadow, :shadowing-import-from specify which symbols are accessible
-and exported from a namespace.
-
-If you are familiar with Common Lisp you should feel right at home.
-If your background is in Python or Ruby then be warned that the
-terminolgy here is quite different from what you are used to.
+The options of the define-namespace form, :import and :export, specify
+which symbols are accessible inside a namespace and exported from a
+namespace.
 
  [describe options]
 
@@ -89,5 +84,5 @@ and I hope it's not too hard to understand.
 
 + namespace.el is still experimental and not yet ready for serious use.
 
-+ A general problem is that M-. and grepping for names will be more
-  difficult when namespaces are used.
++ A general problem is that grepping for names will be more difficult
+  when namespaces are used.
