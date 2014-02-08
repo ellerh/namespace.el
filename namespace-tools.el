@@ -27,6 +27,7 @@
 (require 'etags)
 (require 'find-func)
 (require 'eldoc)
+(require 'pp)
 (eval-when-compile
   (require 'pcase))
 
@@ -142,18 +143,6 @@
 	   (error "Found no definition for %s in %s"
 		  (substring-no-properties name) buffer)))))
 
-  (defun eval-sexp (ns sexp insert-result)
-    (let ((standard-output (if insert-result (current-buffer) t)))
-      (eval-last-sexp-print-value
-       (eval-in-namespace ns sexp lexical-binding)
-       insert-result)))
-
-  (defun eval-last-sexp (insert-result)
-    (interactive "P")
-    (let ((ns (current-namespace)))
-      (cond (ns (eval-sexp ns (preceding-sexp) insert-result))
-	    (t (global (eval-last-sexp insert-result))))))
-
   (defun call-name-at-point ()
     (ignore-errors
       (save-excursion
@@ -224,13 +213,14 @@
   (defun activate ()
     "Activate advice and bind keys."
     (interactive)
+    (ad-activate 'eval-sexp-add-defvars)
+    (ad-activate 'pp-last-sexp)
     (ad-activate 'find-function-search-for-symbol)
     (ad-activate 'function-called-at-point)
     (setq eldoc-documentation-function #'eldoc)
     (let ((map emacs-lisp-mode-map))
       (define-key map (kbd "M-.") 'namespace-tools-find-definition)
-      (define-key map (kbd "M-,") 'pop-tag-mark)
-      (define-key map (kbd "C-x C-e") 'namespace-tools-eval-last-sexp))
+      (define-key map (kbd "M-,") 'pop-tag-mark))
     (add-hook 'emacs-lisp-mode-hook 'namespace-tools--elisp-mode-hook)
     ;; enable completion in all elisp buffers
     (dolist (b (buffer-list))
@@ -240,7 +230,7 @@
 
   )
 
-(defadvice find-function-search-for-symbol (after namespace--unqualified)
+(defadvice find-function-search-for-symbol (after namespace-aware)
   (let ((loc ad-return-value)
 	(sym (ad-get-arg 0)))
     (pcase loc
@@ -256,10 +246,24 @@
 	   (_ loc))))
       (_ loc))))
 
-(defadvice function-called-at-point (around namespace--resolve)
+(defadvice function-called-at-point (around namespace-aware)
   (setq ad-return-value
 	(or (namespace-tools--function-symbol-at-point)
 	    ad-do-it)))
+
+(defadvice eval-sexp-add-defvars (after namespace-aware)
+  (let ((sexp ad-return-value)
+	(ns (namespace-tools--current-namespace)))
+    (when ns
+      (setq ad-return-value
+	    `(namespace-eval-in-namespace ',ns ',sexp lexical-binding)))))
+
+(defadvice pp-last-sexp (after namespace-aware)
+  (let ((sexp ad-return-value)
+	(ns (namespace-tools--current-namespace)))
+    (when ns
+      (setq ad-return-value
+	    `(namespace-eval-in-namespace ',ns ',sexp lexical-binding)))))
 
 ;;;###autoload(autoload 'namespace-tools-activate "namespace-tools" nil t)
 
