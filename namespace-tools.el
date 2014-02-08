@@ -211,6 +211,7 @@
 	      'namespace-tools--completions
 	      nil 'local))
 
+  ;;FIXME: make tab completion in minibuffer work
   (defun eval-expression (namespace exp)
     (interactive
      (let* ((ns (current-namespace))
@@ -303,12 +304,11 @@
 	(or (namespace-tools--function-symbol-at-point)
 	    ad-do-it)))
 
-(defadvice eval-sexp-add-defvars (after namespace-aware)
-  (let ((sexp ad-return-value)
-	(ns (namespace-tools--current-namespace)))
+(defadvice eval-sexp-add-defvars (before namespace-aware)
+  (let ((ns (namespace-tools--current-namespace)))
     (when ns
-      (setq ad-return-value
-	    `(namespace-eval-in-namespace ',ns ',sexp lexical-binding)))))
+      (let ((sexp (ad-get-arg 0)))
+	(ad-set-arg 0 (namespace-macroexpand-all ns sexp))))))
 
 (defadvice pp-last-sexp (after namespace-aware)
   (let ((sexp ad-return-value)

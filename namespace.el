@@ -868,8 +868,9 @@
     (namespace--macrolet-env (namespace--fsyms-to-csyms fsyms) nil)))
 
 (defun namespace-macroexpand-all (ns form)
-  (macroexpand-all form (namespace--macroexpand-all-env ns)))
+  (macroexpand-all `(namespace--progn ,(namespace--name ns) ,form)))
 
+;; FIXME: missing call to namespace--walk-toplevel
 (defun namespace-macroexpand1 (ns form)
   (let ((env (namespace--macroexpand-all-env ns)))
     (cond ((and (consp form)
@@ -883,13 +884,14 @@
 	  (t (let ((macroexpand-all-environment env))
 	       (macroexpand form))))))
 
+;; FIXME: missing call to namespace--walk-toplevel
 (defun namespace-macroexpand (ns form)
   (let ((env (namespace--macroexpand-all-env ns)))
     (macroexpand form env)))
 
 (defun namespace-eval-in-namespace (ns form &optional lexical)
-  (eval (namespace-macroexpand-all ns form)
-	lexical))
+  (let ((exp (namespace-macroexpand-all ns form)))
+    (eval exp lexical)))
 
 
 (defun namespace-map-accessible (ns fun)
