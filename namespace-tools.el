@@ -23,13 +23,14 @@
 
 ;;; Code:
 
+(eval-when-compile
+  (require 'pcase))
 (require 'cl-ns)
 (require 'etags)
 (require 'find-func)
 (require 'eldoc)
 (require 'pp)
-(eval-when-compile
-  (require 'pcase))
+(require 'thingatpt)
 
 (define-namespace namespace
     ((:export find-namespace
@@ -210,6 +211,54 @@
 	      'namespace-tools--completions
 	      nil 'local))
 
+  (defun eval-expression (namespace exp)
+    (interactive
+     (let* ((ns (current-namespace))
+	    (prompt (format "%s> " (cond (ns (namespace--name ns))
+					 (t "(global)"))))
+	    (exp (read--expression prompt)))
+       (list ns exp)))
+    (let ((ns namespace))
+      (global (eval-expression
+	       (cond (ns `(namespace-eval-in-namespace ',ns ',exp))
+		   (t exp))))))
+
+  (defun pp (sexp)
+    (with-output-to-temp-buffer "*Pp Eval Output*"
+      (global (pp sexp))
+      (with-current-buffer standard-output
+	(emacs-lisp-mode))))
+
+  (defun macroexpand1 (ns form)
+    (cond (ns (namespace-macroexpand1 ns form))
+	  (t (let ((macro (and (consp form)
+			       (symbolp (car form))
+			       (symbol-function (car form)))))
+	       (cond ((and macro (consp macro)
+			   (eq (car macro) 'macro))
+		      (apply (cdr macro) (cdr form)))
+		     (t form))))))
+
+  (defun macroexpand (ns form)
+    (cond (ns (namespace-macroexpand ns form))
+	  (t (global (macroexpand form)))))
+
+  (defun macroexpand-all (ns form)
+    (cond (ns (namespace-macroexpand-all ns form))
+	  (t (global (macroexpand-all form)))))
+
+  (defun expand (&optional repeatedly)
+    (interactive "P")
+    (let* ((form (form-at-point 'sexp))
+	   (ns (current-namespace))
+	   (expanded (cond (repeatedly (macroexpand ns form))
+			   (t (macroexpand1 ns form)))))
+      (pp expanded)))
+
+  (defun expand-all (form)
+    (interactive (list (form-at-point 'sexp)))
+    (pp (macroexpand-all (current-namespace) form)))
+
   (defun activate ()
     "Activate advice and bind keys."
     (interactive)
@@ -220,7 +269,10 @@
     (setq eldoc-documentation-function #'eldoc)
     (let ((map emacs-lisp-mode-map))
       (define-key map (kbd "M-.") 'namespace-tools-find-definition)
-      (define-key map (kbd "M-,") 'pop-tag-mark))
+      (define-key map (kbd "M-,") 'pop-tag-mark)
+      (define-key map (kbd "C-c :") 'namespace-tools--eval-expression)
+      (define-key map (kbd "C-c m") 'namespace-tools--expand)
+      (define-key map (kbd "C-c M") 'namespace-tools--expand-all))
     (add-hook 'emacs-lisp-mode-hook 'namespace-tools--elisp-mode-hook)
     ;; enable completion in all elisp buffers
     (dolist (b (buffer-list))

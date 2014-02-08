@@ -678,6 +678,16 @@
 ;;					   `(,',csym . ,args))))
 ;;     . ,body))
 
+(defun namespace--macrolet-env (fsyms env)
+  (append `((namespace--fsyms . (lambda () ',fsyms))
+	    (namespace--fcache . (lambda () ',(cons nil nil)))
+	    (function . (lambda (sym)
+			  (let ((env macroexpand-all-environment))
+			    (namespace--function-expander sym env))))
+	    ,@(cl-loop for (sym . csym) in fsyms
+		       collect `(,sym . (lambda (&rest args)
+					  `(,',csym . ,args)))))
+	  env))
 
 ;; This does the same as te above macro but more efficiently.  The
 ;; above version creates lots of macrolets which will be expanded in a
@@ -685,17 +695,8 @@
 ;; uses the stack space more efficiently.
 (cl-defmacro namespace--macrolet (fsyms &body body &environment env)
   (declare (indent 1))
-  (let ((env2 (append
-	       `((namespace--fsyms . (lambda () ',fsyms))
-		 (namespace--fcache . (lambda () ',(cons nil nil)))
-		 (function . (lambda (sym)
-			       (let ((env macroexpand-all-environment))
-				 (namespace--function-expander sym env))))
-		 ,@(cl-loop for (sym . csym) in fsyms
-			    collect `(,sym . (lambda (&rest args)
-					       `(,',csym . ,args)))))
-	       env)))
-    (macroexpand-all `(progn . ,body) env2)))
+  (macroexpand-all `(progn . ,body)
+		   (namespace--macrolet-env fsyms env)))
 
 (defun namespace--fsyms-to-csyms (fsyms)
   (cl-loop for (sym . qsym) in fsyms
@@ -862,10 +863,33 @@
 	  (t `(funcall ',name . ,args)))))
 
 
-(defun namespace-eval-in-namespace (ns form &optional lexical)
+(defun namespace--macroexpand-all-env (ns)
   (let ((fsyms (namespace--fsyms ns)))
-    (eval `(namespace--macrolet ,(namespace--fsyms-to-csyms fsyms) ,form)
-	  lexical)))
+    (namespace--macrolet-env (namespace--fsyms-to-csyms fsyms) nil)))
+
+(defun namespace-macroexpand-all (ns form)
+  (macroexpand-all form (namespace--macroexpand-all-env ns)))
+
+(defun namespace-macroexpand1 (ns form)
+  (let ((env (namespace--macroexpand-all-env ns)))
+    (cond ((and (consp form)
+		(symbolp (car form)))
+	   (let* ((sym (car form))
+		  (macro (or (cdr (assq sym env))
+			     (namespace--macro-function sym)))
+		  (macroexpand-all-environment env))
+	     (cond (macro (apply macro (cdr form)))
+		   (t form))))
+	  (t (let ((macroexpand-all-environment env))
+	       (macroexpand form))))))
+
+(defun namespace-macroexpand (ns form)
+  (let ((env (namespace--macroexpand-all-env ns)))
+    (macroexpand form env)))
+
+(defun namespace-eval-in-namespace (ns form &optional lexical)
+  (eval (namespace-macroexpand-all ns form)
+	lexical))
 
 
 (defun namespace-map-accessible (ns fun)
