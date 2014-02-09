@@ -1,4 +1,4 @@
-;; namespace-test.el --- tests for namespace.el
+;; namespace-test.el --- tests for namespace.el         -*-lexical-binding:t-*-
 
 ;; Copyright (C) 2014 Helmut Eller
 
@@ -124,7 +124,7 @@
 
 (define-namespace h
     ((:import cl)
-     (:export a b c d e f))
+     (:export a b c d e f g h))
 
   (defun a ()
     (loop for x across [0 1 2 3 4]
@@ -153,6 +153,39 @@
 	(incf r i)
 	(when (equal i 3)
 	  (return r)))))
+
+  )
+
+(define-namespace i
+    ((:import cl)
+     (:export a b c d e f))
+
+  (defun a (n) (cons n "a"))
+
+  (defun b (n)
+    (labels ((a (n) (if (= n 0) 1 (* n (a (1- n))))))
+      (a n)))
+
+  (defun c ()
+    (labels ((a (l)
+		(cond ((null l) '())
+		      (t (append (a (cdr l)) (list (car l)))))))
+      #'a))
+
+  (defun d ()
+    (labels ((a (x) (cons "d.a" x)))
+      (labels ((a (x) (cons "d.a.a" x)))
+	#'a)))
+
+  (defun e ()
+    (labels ((a (x) (cons "e.a" x)))
+      (labels ((b (x) (cons "e.a.b" x)))
+	#'a)))
+
+  (defun f ()
+    (labels ((b (x) (cons "e.a" x)))
+      (labels ((b (x) (cons "e.a.b" x)))
+	#'a)))
 
   )
 
@@ -271,6 +304,28 @@
 
 (ert-deftest test-h.6 ()
   (should (equal (h-f 7) 6)))
+
+(ert-deftest test-i.1 ()
+  (should (equal (i-a 7) '(7 . "a"))))
+
+(ert-deftest test-i.2 ()
+  (should (equal (i-b 7) 5040)))
+
+(ert-deftest test-i.3 ()
+  (should (equal (funcall (i-c) '(a b c))
+		 '(c b a))))
+
+(ert-deftest test-i.4 ()
+  (should (equal (funcall (i-d) 'i.4)
+		 '("d.a.a" . i.4))))
+
+(ert-deftest test-i.5 ()
+  (should (equal (funcall (i-e) 'i.5)
+		 '("e.a" . i.5))))
+
+(ert-deftest test-i.6 ()
+  (should (equal (funcall (i-f) 'i.6)
+		 '(i.6 . "a"))))
 
 (define-namespace c1.a
   ((:export f)))

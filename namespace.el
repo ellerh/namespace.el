@@ -1,4 +1,4 @@
-;;; namespace.el --- Namespaces as macro             -*- lexical-binding: t -*-
+;;; namespace.el --- Namespaces as macro                -*-lexical-binding:t-*-
 
 ;; Copyright (C) 2014 Helmut Eller
 
@@ -655,9 +655,12 @@
 ;; (function X) special form.  This exploits the fact that macroexpand
 ;; stops macroexpanding when an expander returns the same form twice.
 (defun namespace--function-expander (sym env)
-  (or (let* ((fsyms (macroexpand '(namespace--fsyms) env))
-	     (probe (assoc sym fsyms)))
-	(and probe `(symbol-function ',(cdr probe))))
+  (or (pcase (assoc sym env)
+	(`(,_ . (lambda (&rest args)
+		  (declare (namespace--renamer))
+		  (cons (quote ,sym2) args)))
+	 `(symbol-function ',sym2))
+	(_ nil))
       (let ((cache (macroexpand '(namespace--fcache) env)))
 	(cond ((eq (car cache) sym)
 	       (cdr cache))
@@ -666,6 +669,41 @@
 		 (setcar cache sym)
 		 (setcdr cache form)
 		 form))))))
+
+(defun namespace--macro-function (name)
+  (pcase (symbol-function name)
+    (`(macro . ,fun) fun)
+    (_ nil)))
+
+(defun namespace--cl-labels-expander (&rest args)
+  (let ((env macroexpand-all-environment)
+	(macro (namespace--macro-function 'cl-labels)))
+    (unless lexical-binding
+      (error"cl-labels used inside namespace but lexical-binding is nil"))
+    (pcase (assoc 'function env)
+      (`(,_ . (lambda ,_
+		(declare (namespace--function-expander))
+		. ,_))
+       (macroexpand-all `(cl-labels . ,args)
+			(append `((cl-labels . ,macro)
+				  (function . ,#'cl--labels-convert))
+				env)))
+      (_
+       (macroexpand-all `(cl-labels . ,args)
+			(append `((cl-labels . ,macro))
+				env))))))
+
+(defun namespace--lexical-let-expander (&rest args)
+  args
+  (error "lexical-let not supported inside namespace"))
+
+(defun namespace--labels-expander (&rest args)
+  args
+  (error "labels not supported inside namespace"))
+
+(defun namespace--flet-expander (&rest args)
+  args
+  (error "labels not supported inside namespace"))
 
 ;;(cl-defmacro namespace--macrolet (fsyms &body body)
 ;;  (declare (indent 1))
@@ -679,14 +717,22 @@
 ;;     . ,body))
 
 (defun namespace--macrolet-env (fsyms env)
-  (append `((namespace--fsyms . (lambda () ',fsyms))
+  (append (cl-loop for (sym . csym) in fsyms
+		   collect `(,sym . (lambda (&rest args)
+				      (declare (namespace--renamer))
+				      (cons (quote ,csym) args))))
+	  '((namespace--fsyms . (lambda () ',fsyms))
 	    (namespace--fcache . (lambda () ',(cons nil nil)))
 	    (function . (lambda (sym)
+			  (declare (namespace--function-expander))
 			  (let ((env macroexpand-all-environment))
 			    (namespace--function-expander sym env))))
-	    ,@(cl-loop for (sym . csym) in fsyms
-		       collect `(,sym . (lambda (&rest args)
-					  `(,',csym . ,args)))))
+	    (lexical-let . namespace--lexical-let-expander)
+	    (labels . namespace--labels-expander)
+	    (flet . namespace--flet-expander)
+	    (cl-labels . namespace--cl-labels-expander)
+	    (cl-flet . namespace--cl-flet-expander)
+	    )
 	  env))
 
 ;; This does the same as te above macro but more efficiently.  The
@@ -852,11 +898,6 @@
   (error "defadvice not allowed in namespace"))
 
 
-(defun namespace--macro-function (name)
-  (pcase (symbol-function name)
-    (`(macro . ,fun) fun)
-    (_ nil)))
-
 (cl-defmacro namespace-global ((name &rest args))
   (let ((macro (namespace--macro-function name)))
     (cond (macro (apply macro args))
