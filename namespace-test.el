@@ -189,6 +189,20 @@
 
   )
 
+(define-namespace j
+    ((:export f h))
+
+  (defmacro def (f) `(defun ,f () ,(symbol-name f)))
+
+  (def f)
+  (def g)
+
+  (defmacro foo (x y) `(cons ,y ,x))
+
+  (defun h (a b) (foo a b))
+
+  )
+
 (ert-deftest test-a.0 ()
   (should (equal (a-a 1 2) '(a--b (a-a 2 1)))))
 
@@ -326,6 +340,15 @@
 (ert-deftest test-i.6 ()
   (should (equal (funcall (i-f) 'i.6)
 		 '(i.6 . "a"))))
+
+(ert-deftest test-j.1 ()
+  (should (equal (j-f) "f")))
+
+(ert-deftest test-j.2 ()
+  (should (equal (j--g) "g")))
+
+(ert-deftest test-j.3 ()
+  (should (equal (j-h 1 2) '(2 . 1))))
 
 (define-namespace c1.a
   ((:export f)))

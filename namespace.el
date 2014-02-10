@@ -587,7 +587,7 @@
 
 (defvar namespace--rewriters (make-hash-table))
 
-(cl-defmacro namespace-define-rewriter (name (env form) &body body)
+(cl-defmacro namespace--define-rewriter (name (env form) &body body)
   (declare (indent 2))
   (let ((fname (intern (format "namespace--rw-%s" name))))
     `(progn
@@ -620,17 +620,24 @@
 		(let rewrite (gethash op namespace--rewriters))
 		(guard rewrite))
 	   op
-	   (cl-destructuring-bind (fss rform recursep)
+	   (cl-destructuring-bind (fss rform env2 recursep)
 	       (funcall rewrite env form)
 	     (setcdr fsyms (append fss (cdr fsyms)))
+	     (setq env env2)
 	     (cond (recursep (push rform forms))
 		   (t (push rform rbody)))))
 	  (`(progn . ,rest)
 	   (setq forms (append rest forms)))
-	  ((and `(,_ . ,_)
-		(let expansion (macroexpand form env))
-		(guard (not (eq expansion form))))
-	   (push expansion forms))
+	  ((and `(,sym . ,args)
+		(let macro (or (cdr (assq sym env))
+			       (namespace--macro-function sym)))
+		(guard macro))
+	   sym ;; ignored
+	   (let ((expansion (apply macro args)))
+	     (cond ((eq expansion form)
+		    (push form rbody))
+		   (t
+		    (push expansion forms)))))
 	  (_
 	   (push form rbody)))))
     (list (cdr fsyms)
@@ -770,19 +777,44 @@
 	      (csym (namespace--qsym-to-csym qsym)))
 	 (list `((,sym . ,qsym))
 	       `(,op ,csym . ,rest)
+	       env
 	       nil)))
       (_ (error "syntax error: %S" form)))))
 
-(defmacro namespace--define-defun-like (&rest names)
+(defmacro namespace--define-rewriters (rewriter &rest names)
+  (declare (indent 1))
   `(progn
      ,@(cl-loop for name in names collect
-		`(namespace-define-rewriter ,name (env form)
-		   (namespace--defun-like env form)))))
+		`(namespace--define-rewriter ,name (env form)
+		   (,rewriter env form)))))
 
-(namespace--define-defun-like
- defun defun* cl-defun
- defmacro defmacro*  cl-defmacro
- define-compiler-macro cl-define-compiler-macro)
+;; FIXME: compiler macros may need eval-when-compile
+(namespace--define-rewriters namespace--defun-like
+  defun defun* cl-defun
+  define-compiler-macro cl-define-compiler-macro
+  )
+
+
+;;; defmacro
+
+;; insert eval-and-compile because in (progn X) the compiler doesn't
+;; treat X as toplevel form even if the progn occurs at toplevel.
+(defun namespace--defmacro-like (env form)
+  (let ((ns (funcall (cdr (assoc 'namespace--ns env)))))
+    (pcase form
+      (`(,op ,sym . ,rest)
+       (let* ((qsym (namespace--intern ns (symbol-name sym)))
+	      (csym (namespace--qsym-to-csym qsym)))
+	 (list `((,sym . ,qsym))
+	       `(eval-and-compile
+		  (,op ,csym . ,rest))
+	       (cons (cons sym `(lambda . ,rest)) ;; FIXME: closure
+		     env)
+	       nil)))
+      (_ (error "syntax error: %S" form)))))
+
+(namespace--define-rewriters namespace--defmacro-like
+  defmacro defmacro*  cl-defmacro)
 
 
 ;;; defstruct
@@ -885,15 +917,13 @@
 			   `((cl-deftype ,(namespace--symconc nsname '- string)
 					 () ',tname)))
 		       . ,aliases)))
-    (list (append fs1 fs2) def nil)))
+    (list (append fs1 fs2) def env nil)))
 
-(namespace-define-rewriter defstruct (env form)
-  (namespace--defstruct-like env form))
+(namespace--define-rewriters namespace--defstruct-like
+  defstruct
+  cl-defstruct)
 
-(namespace-define-rewriter cl-defstruct (env form)
-  (namespace--defstruct-like env form))
-
-(namespace-define-rewriter defadvice (env form)
+(namespace--define-rewriter defadvice (env form)
   form
   (error "defadvice not allowed in namespace"))
 
