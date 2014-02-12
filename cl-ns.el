@@ -36,9 +36,11 @@
   ;; apparently does not.
 
   (defmacro dolist (spec &rest body)
+    (declare (indent 1))
     `(cl-block nil (namespace-global (dolist ,spec . ,body))))
 
   (defmacro dotimes (spec &rest body)
+    (declare (indent 1))
     `(cl-block nil (namespace-global (dotimes ,spec . ,body))))
 
   )

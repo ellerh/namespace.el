@@ -1,4 +1,4 @@
-;;; namespace-tools.el --- Namespace aware M-.      -*- lexical-binding: t -*-
+;;; namespace-tools.el --- Namespace aware M-.          -*-lexical-binding:t-*-
 
 ;; Copyright (C) 2014 Helmut Eller
 
@@ -31,6 +31,7 @@
 (require 'eldoc)
 (require 'pp)
 (require 'thingatpt)
+(require 'lisp-mode)
 
 (define-namespace namespace
     ((:export find-namespace
@@ -206,11 +207,6 @@
 						       (boundp sym)))))))
 	     (list start end list :exclusive 'no)))))
 
-  (defun elisp-mode-hook ()
-    (add-hook 'completion-at-point-functions
-	      'namespace-tools--completions
-	      nil 'local))
-
   ;;FIXME: make tab completion in minibuffer work
   (defun eval-expression (namespace exp)
     (interactive
@@ -260,6 +256,62 @@
     (interactive (list (form-at-point 'sexp)))
     (pp (macroexpand-all (current-namespace) form)))
 
+  ;; The indendation code is copied from lisp-modes
+  ;; lisp-indent-function and refactored a bit.  lookup-indent-method
+  ;; is the key bit that figures out what how to indend a particlar
+  ;; symbol.
+
+  (defvar calculate-lisp-indent-last-sexp)
+
+  (defun indent-non-call-form ()
+    (when (not (> (save-excursion (forward-line 1) (point))
+		  calculate-lisp-indent-last-sexp))
+      (goto-char calculate-lisp-indent-last-sexp)
+      (beginning-of-line)
+      (parse-partial-sexp (point) calculate-lisp-indent-last-sexp 0 t))
+    ;; Indent under the list or under the first sexp on the same
+    ;; line as calculate-lisp-indent-last-sexp.  Note that first
+    ;; thing on that line has to be complete sexp since we are
+    ;; inside the innermost containing sexp.
+    (backward-prefix-chars)
+    (current-column))
+
+  (defun lookup-indent-method (symbol-name)
+    (let* ((ns (current-namespace))
+	   (sym (cond (ns (resolve ns symbol-name))
+		      (t (intern-soft symbol-name)))))
+      (or (function-get sym 'lisp-indent-function)
+	  (get sym 'lisp-indent-hook)
+	  (and (> (length symbol-name) 3)
+	       (string-match "\\`def" symbol-name)))))
+
+  (defun indent-call-form (indent-point state normal-indent)
+    (let* ((function (buffer-substring-no-properties
+		      (point) (progn (forward-sexp 1) (point))))
+	   (method (lookup-indent-method function)))
+      (cond ((eq method 'defun)
+	     (lisp-indent-defform state indent-point))
+	    ((integerp method)
+	     (lisp-indent-specform method state indent-point normal-indent))
+	    (method
+	     (funcall method indent-point state)))))
+
+  (defun lisp-indent-function (indent-point state)
+    (let ((normal-indent (current-column)))
+      (goto-char (1+ (elt state 1)))
+      (parse-partial-sexp (point) calculate-lisp-indent-last-sexp 0 t)
+      (cond ((and (elt state 2)
+		  (not (looking-at "\\sw\\|\\s_")))
+	     ;; car of form doesn't seem to be a symbol
+	     (indent-non-call-form))
+	    (t
+	     (indent-call-form indent-point state normal-indent)))))
+
+  (defun elisp-mode-hook ()
+    (add-hook 'completion-at-point-functions
+	      'namespace-tools--completions
+	      nil 'local))
+
   (defun activate ()
     "Activate advice and bind keys."
     (interactive)
@@ -267,6 +319,7 @@
     (ad-activate 'pp-last-sexp)
     (ad-activate 'find-function-search-for-symbol)
     (ad-activate 'function-called-at-point)
+    (ad-activate 'lisp-indent-function)
     (setq eldoc-documentation-function #'eldoc)
     (let ((map emacs-lisp-mode-map))
       (define-key map (kbd "M-.") 'namespace-tools-find-definition)
@@ -317,7 +370,14 @@
       (setq ad-return-value
 	    `(namespace-eval-in-namespace ',ns ',sexp lexical-binding)))))
 
-;;;###autoload(autoload 'namespace-tools-activate "namespace-tools" nil t)
+(defadvice lisp-indent-function (around namespace-aware)
+  (setq ad-return-value
+	(apply #'namespace-tools--lisp-indent-function
+	       (ad-get-args 0))))
+
+;;;###autoload
+(progn
+  (autoload 'namespace-tools-activate "namespace-tools" nil t))
 
 (provide 'namespace-tools)
 
