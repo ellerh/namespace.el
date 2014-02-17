@@ -465,15 +465,15 @@
 
 (defun namespace--parse-import-set (sexp)
   (pcase sexp
-    ((and sym (guard (symbolp sym)))
-     (list (namespace--parse-namespace sym)))
+    ((and ns (guard (namespace--sexp-namespace-p ns)))
+     (list (namespace--parse-namespace ns)))
     (`(,ns . ,filters)
      (cons (namespace--parse-namespace ns)
 	   (mapcar #'namespace--parse-filter filters)))
     (_ (error "bug"))))
 
 (defun namespace--parse-options (options)
-  (let (import-sets exports)
+  (let (import-sets exports re-exports)
     (dolist (option options)
       (pcase option
 	((and `(:import . ,iss)
@@ -484,10 +484,14 @@
 	((and `(:export . ,names)
 	      (guard (namespace--list-of-symbols-p names)))
 	 (setq exports (append exports (namespace--stringify-names names))))
+	((and `(:re-export . ,iss)
+	      (guard (cl-every #'namespace--sexp-import-set-p iss)))
+	 (setq re-exports
+	       (append re-exports (mapcar #'namespace--parse-import-set iss))))
 	(_ (error "Invalid namespace option: %S" option))))
     (namespace--check-disjoint
      (cons :export exports))
-    (list import-sets exports)))
+    (list import-sets exports re-exports)))
 
 
 
@@ -537,13 +541,18 @@
      (namespace--make-anonymous-namespace prefix names))
     (_ (error "bug"))))
 
-(defun namespace--set-imports (ns iss)
+(defun namespace--create-import-sets (ns iss)
   (let ((iss (cl-loop for is in iss collect
 		      (cl-destructuring-bind (ns . filters) is
 			(let ((ns (namespace--create-namespace ns)))
 			  (when (namespace--inconsistent ns)
 			    (namespace--error 'namespace-inconsistent ns))
 			  (namespace--apply-filters ns filters))))))
+    (namespace--check-import-conflicts ns iss)
+    iss))
+
+(defun namespace--set-imports (ns iss)
+  (let ((iss (namespace--create-import-sets ns iss)))
     (namespace--check-import-conflicts ns iss)
     (let ((old-imports (namespace--imports ns)))
       (setf (namespace--imports ns) iss)
@@ -556,14 +565,17 @@
 	(dolist (ns2 new-using)
 	  (cl-pushnew ns (namespace--users ns2)))))))
 
-
-(defun namespace--set-exports (ns exports)
+(defun namespace--set-exports (ns exports re-exports)
   (cl-assert (zerop (hash-table-count (namespace--internal ns))))
   (let* ((old-exports (namespace--exported-qsyms ns))
 	 (new-exports (cl-loop for id in exports collect
 			       (or (namespace--find-external ns id)
 				   (namespace--find-imported ns id)
 				   (namespace--qsym ns id))))
+	 (iss (namespace--create-import-sets ns re-exports))
+	 (new-exports (append new-exports
+			      (cl-loop for is in iss
+				       append (namespace--table-values is))))
 	 (diff (cl-set-difference old-exports new-exports)))
     (when diff
       (namespace--warn 'namespace-previously-exported ns diff))
@@ -575,13 +587,13 @@
 
 ;; FIXME: clearing out internal symbols is probably a good idea but
 ;; conflict dections may need updjustments.
-(defun namespace--define (name imports exports)
+(defun namespace--define (name imports exports re-exports)
   (namespace--validate)
   (let* ((ns (namespace--find-or-make-namespace name)))
     (namespace--set-imports ns imports)
     ;; no errors should happend after this point
     (clrhash (namespace--internal ns))
-    (namespace--set-exports ns exports)
+    (namespace--set-exports ns exports re-exports)
     (setf (namespace--inconsistent ns) nil)
     (namespace--validate-ns ns))
   (namespace--validate)
@@ -589,11 +601,11 @@
 
 (defmacro define-namespace (name options &rest body)
   (declare (indent 2))
-  (cl-destructuring-bind (import-sets exports)
+  (cl-destructuring-bind (import-sets exports re-exports)
       (namespace--parse-options options)
     `(progn
        (eval-and-compile
-	 (namespace--define ',name ',import-sets ',exports))
+	 (namespace--define ',name ',import-sets ',exports ',re-exports))
        (namespace--progn ,name . ,body))))
 
 
