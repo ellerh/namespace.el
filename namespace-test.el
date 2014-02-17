@@ -154,6 +154,12 @@
 	(when (equal i 3)
 	  (return r)))))
 
+  (defun g (f l)
+    (every f l))
+
+  (defun h (f l)
+    (some f l))
+
   )
 
 (define-namespace i
@@ -318,6 +324,14 @@
 
 (ert-deftest test-h.6 ()
   (should (equal (h-f 7) 6)))
+
+(ert-deftest test-h.7 ()
+  (should (equal (h-g #'integerp '(1 2 3))
+		 t)))
+
+(ert-deftest test-h.8 ()
+  (should (equal (h-h #'zerop '(1 0 3))
+		 t)))
 
 (ert-deftest test-i.1 ()
   (should (equal (i-a 7) '(7 . "a"))))

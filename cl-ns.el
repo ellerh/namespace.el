@@ -47,6 +47,7 @@
 
 (define-namespace cl
     ((:import cl-ns-aux)
+     (:import ((:global cl every some)))
      (:export
       labels
       flet

@@ -59,6 +59,7 @@
 			 (:copier nil)
 			 (:conc-name namespace--))
   (name (error "Required argument missing") :type symbol :read-only t)
+  (prefix (error "Required argument missing") :type symbol :read-only t)
   ;; namespaces (or namespace-tables) used by this namespace
   (imports '() :type list)
   ;; namespaces using this namespace
@@ -328,7 +329,7 @@
   (namespace--ct (symbol name))
   (or (gethash name namespace--table)
       (setf (gethash name namespace--table)
-	    (namespace :name name))))
+	    (namespace :name name :prefix name))))
 
 (defun namespace--find-namespace-or-lose (name)
   (or (namespace-find-namespace name)
@@ -357,8 +358,10 @@
        (cl-every #'symbolp x)))
 
 (defun namespace--validate-unique (ns)
-  (cl-assert (eq (namespace-find-namespace (namespace--name ns))
-		 ns)))
+  (let ((name (namespace-find-namespace (namespace--name ns))))
+    (cl-assert (or (not name)
+		   (eq (namespace-find-namespace (namespace--name ns))
+		       ns)))))
 
 (defun namespace--validate-qsym (qsym)
   (namespace--validate-unique (namespace--qsym-ns qsym)))
@@ -427,26 +430,46 @@
      `(:except . ,(mapcar #'symbol-name syms)))
     (_ (error "bug"))))
 
-(defun namespace--sexp-import-set-p (sexp)
+(defun namespace--sexp-namespace-p (sexp)
+  (pcase sexp
+    ((and sym (guard (and (symbolp sym)
+			  (not (keywordp sym)))))
+     sym
+     t)
+    ((and `(:global ,prefix . ,names)
+	  (guard (symbolp prefix))
+	  (guard (namespace--list-of-symbols-p names)))
+     prefix names
+     t)
+    (_ nil)))
+
+(defun namespace--parse-namespace (sexp)
   (pcase sexp
     ((and sym (guard (symbolp sym)))
-     sym ; ignorable
+     sym)
+    (`(:global ,prefix . ,names)
+     `(:global ,prefix . ,(mapcar #'symbol-name names)))
+    (_ (error "bug"))))
+
+(defun namespace--sexp-import-set-p (sexp)
+  (pcase sexp
+    ((and ns (guard (namespace--sexp-namespace-p ns)))
+     ns ; ignorable
      t)
-    ((and `(,sym . ,filters)
-	  (guard (symbolp sym))
+    ((and `(,ns . ,filters)
+	  (guard (namespace--sexp-namespace-p ns))
 	  (guard (cl-every #'namespace--sexp-filter-p filters)))
-     sym filters ; ignorable
+     ns filters ; ignorable
      t)
     (_ nil)))
 
 (defun namespace--parse-import-set (sexp)
   (pcase sexp
     ((and sym (guard (symbolp sym)))
-     (list sym))
-    ((and `(,sym . ,filters)
-	  (guard (symbolp sym))
-	  (guard (cl-every #'namespace--sexp-filter-p filters)))
-     (cons sym (mapcar #'namespace--parse-filter filters)))
+     (list (namespace--parse-namespace sym)))
+    (`(,ns . ,filters)
+     (cons (namespace--parse-namespace ns)
+	   (mapcar #'namespace--parse-filter filters)))
     (_ (error "bug"))))
 
 (defun namespace--parse-options (options)
@@ -499,10 +522,25 @@
      (namespace--apply-filters (namespace--except-table is ids)
 			       more))))
 
+(defun namespace--make-anonymous-namespace (prefix ids)
+  (let* ((ns (namespace :name nil :prefix prefix))
+	 (exports (namespace--external ns)))
+    (dolist (id ids)
+      (puthash id (namespace--qsym ns id) exports))
+    ns))
+
+(defun namespace--create-namespace (name)
+  (pcase name
+    ((and sym (guard (symbolp sym)))
+     (namespace--find-namespace-or-lose sym))
+    (`(:global ,prefix . ,names)
+     (namespace--make-anonymous-namespace prefix names))
+    (_ (error "bug"))))
+
 (defun namespace--set-imports (ns iss)
   (let ((iss (cl-loop for is in iss collect
 		      (cl-destructuring-bind (ns . filters) is
-			(let ((ns (namespace--find-namespace-or-lose ns)))
+			(let ((ns (namespace--create-namespace ns)))
 			  (when (namespace--inconsistent ns)
 			    (namespace--error 'namespace-inconsistent ns))
 			  (namespace--apply-filters ns filters))))))
@@ -573,9 +611,8 @@
 
 (defun namespace--qsym-to-csym (qsym)
   (let* ((name (namespace--qsym-id qsym))
-	 (ns (namespace--qsym-ns qsym))
-	 (nsname (namespace--name ns)))
-    (namespace--symconc nsname
+	 (ns (namespace--qsym-ns qsym)))
+    (namespace--symconc (namespace--prefix ns)
 			(if (namespace--name-external-p ns name) '- '--)
 			name)))
 
