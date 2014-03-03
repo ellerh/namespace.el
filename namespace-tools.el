@@ -32,6 +32,7 @@
 (require 'pp)
 (require 'thingatpt)
 (require 'lisp-mode)
+(require 'nadvice)
 
 (define-namespace namespace
     ((:export find-namespace
@@ -136,14 +137,29 @@
 		      (t (error "Symbol not bound: %s" name))))
 	   (buffer (car loc))
 	   (point (cdr loc)))
-    (cond (point
-	   (push-tag-mark)
-	   (switch-to-buffer buffer)
-	   (goto-char point)
-	   (recenter 1))
-	  (t
-	   (error "Found no definition for %s in %s"
-		  (substring-no-properties name) buffer)))))
+      (cond (point
+	     (push-tag-mark)
+	     (switch-to-buffer buffer)
+	     (goto-char point)
+	     (recenter 1))
+	    (t
+	     (error "Found no definition for %s in %s"
+		    (substring-no-properties name) buffer)))))
+
+  (defun search-for-symbol-advice (next symbol type library)
+    (let ((loc (funcall next symbol type library)))
+      (pcase loc
+	(`(,_ . nil)
+	 (let ((guess (namespace-tools--guess-namespace symbol)))
+	   (pcase guess
+	     (`(,_ . ,name)
+	      (let ((loc2 (namespace-tools--locate-name name symbol)))
+		(pcase loc2
+		  ((or `nil `(,_ . nil)) loc)
+		  (`(,_buffer . ,_pos)
+		   loc2))))
+	     (_ loc))))
+	(_ loc))))
 
   (defun call-name-at-point ()
     (ignore-errors
@@ -168,6 +184,10 @@
 	    (and name (resolve-fbound name ns)))
 	  (let ((name (call-name-at-point)))
 	    (and name (resolve-fbound name ns))))))
+
+  (defun function-called-at-point-advice (next)
+    (or (namespace-tools--function-symbol-at-point)
+	(funcall next)))
 
   (defun arglist (sym)
     (let ((fun (symbol-function sym))
@@ -218,13 +238,25 @@
     (let ((ns namespace))
       (global (eval-expression
 	       (cond (ns `(namespace-eval-in-namespace ',ns ',exp))
-		   (t exp))))))
+		     (t exp))))))
+
+  (defun eval-sexp-add-defvars-advice (next exp &rest rest)
+    (let ((exp (let ((ns (namespace-tools--current-namespace)))
+		 (cond (ns (namespace-macroexpand-all ns exp))
+		       (t exp)))))
+      (apply next exp rest)))
 
   (defun pp (sexp)
     (with-output-to-temp-buffer "*Pp Eval Output*"
       (global (pp sexp))
       (with-current-buffer standard-output
 	(emacs-lisp-mode))))
+
+  (defun pp-last-sexp-advice (next)
+    (let* ((sexp (funcall next))
+	   (ns (namespace-tools--current-namespace)))
+      (cond (ns `(namespace-eval-in-namespace ',ns ',sexp lexical-binding))
+	    (t sexp))))
 
   (defun macroexpand1 (ns form)
     (cond (ns (namespace-macroexpand1 ns form))
@@ -307,19 +339,44 @@
 	    (t
 	     (indent-call-form indent-point state normal-indent)))))
 
+  (defun lisp-indent-function-advice (next indent-point state)
+    (cond ((namespace-tools--current-namespace)
+	   (lisp-indent-function indent-point state))
+	  (t
+	   (funcall next indent-point state))))
+
   (defun elisp-mode-hook ()
     (add-hook 'completion-at-point-functions
 	      'namespace-tools--completions
 	      nil 'local))
 
+  (defmacro advice* (&rest body)
+    `(progn
+       ,@(cl-loop for (name kind fun) in body
+		  collect `(progn
+			     (message "advice-add %s" ',name)
+			     (advice-add ',name ,kind (function ,fun)
+					 '((name . namespace-aware)))))))
+
+  (defun deactivate ()
+    (interactive)
+    (progn
+      (dolist (sym '(find-function-search-for-symbol
+		     function-called-at-point
+		     eval-sexp-add-defvars
+		     pp-last-sexp
+		     lisp-indent-function))
+	(advice-remove sym 'namespace-aware))))
+
   (defun activate ()
     "Activate advice and bind keys."
     (interactive)
-    (ad-activate 'eval-sexp-add-defvars)
-    (ad-activate 'pp-last-sexp)
-    (ad-activate 'find-function-search-for-symbol)
-    (ad-activate 'function-called-at-point)
-    (ad-activate 'lisp-indent-function)
+    (advice*
+     (find-function-search-for-symbol :around search-for-symbol-advice)
+     (function-called-at-point :around function-called-at-point-advice)
+     (eval-sexp-add-defvars :around eval-sexp-add-defvars-advice)
+     (pp-last-sexp :around pp-last-sexp-advice)
+     (lisp-indent-function :around lisp-indent-function-advice))
     (setq eldoc-documentation-function #'eldoc)
     (let ((map emacs-lisp-mode-map))
       (define-key map (kbd "M-.") 'namespace-tools-find-definition)
@@ -335,45 +392,6 @@
 	  (elisp-mode-hook)))))
 
   )
-
-(defadvice find-function-search-for-symbol (after namespace-aware)
-  (let ((loc ad-return-value)
-	(sym (ad-get-arg 0)))
-    (pcase loc
-      (`(,_ . nil)
-       (let ((guess (namespace-tools--guess-namespace sym)))
-	 (pcase guess
-	   (`(,_ . ,name)
-	    (let ((loc2 (namespace-tools--locate-name name sym)))
-	      (pcase loc2
-		((or `nil `(,_ . nil)) loc)
-		(`(,buffer . ,pos)
-		 (setq ad-return-value loc2)))))
-	   (_ loc))))
-      (_ loc))))
-
-(defadvice function-called-at-point (around namespace-aware)
-  (setq ad-return-value
-	(or (namespace-tools--function-symbol-at-point)
-	    ad-do-it)))
-
-(defadvice eval-sexp-add-defvars (before namespace-aware)
-  (let ((ns (namespace-tools--current-namespace)))
-    (when ns
-      (let ((sexp (ad-get-arg 0)))
-	(ad-set-arg 0 (namespace-macroexpand-all ns sexp))))))
-
-(defadvice pp-last-sexp (after namespace-aware)
-  (let ((sexp ad-return-value)
-	(ns (namespace-tools--current-namespace)))
-    (when ns
-      (setq ad-return-value
-	    `(namespace-eval-in-namespace ',ns ',sexp lexical-binding)))))
-
-(defadvice lisp-indent-function (around namespace-aware)
-  (setq ad-return-value
-	(apply #'namespace-tools--lisp-indent-function
-	       (ad-get-args 0))))
 
 ;;;###autoload
 (progn
