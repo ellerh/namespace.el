@@ -241,7 +241,7 @@
 		     (t exp))))))
 
   (defun eval-sexp-add-defvars-advice (next exp &rest rest)
-    (let ((exp (let ((ns (namespace-tools--current-namespace)))
+    (let ((exp (let ((ns (current-namespace)))
 		 (cond (ns (namespace-macroexpand-all ns exp))
 		       (t exp)))))
       (apply next exp rest)))
@@ -254,7 +254,7 @@
 
   (defun pp-last-sexp-advice (next)
     (let* ((sexp (funcall next))
-	   (ns (namespace-tools--current-namespace)))
+	   (ns (current-namespace)))
       (cond (ns `(namespace-eval-in-namespace ',ns ',sexp lexical-binding))
 	    (t sexp))))
 
@@ -340,7 +340,7 @@
 	     (indent-call-form indent-point state normal-indent)))))
 
   (defun lisp-indent-function-advice (next indent-point state)
-    (cond ((namespace-tools--current-namespace)
+    (cond ((current-namespace)
 	   (lisp-indent-function indent-point state))
 	  (t
 	   (funcall next indent-point state))))
@@ -354,7 +354,7 @@
     `(progn
        ,@(cl-loop for (name kind fun) in body
 		  collect `(advice-add ',name ,kind (function ,fun)
-				       '((name . namespace-aware))))))
+				       '((name . namespace-tools))))))
 
   (defun deactivate ()
     (interactive)
@@ -364,7 +364,7 @@
 		     eval-sexp-add-defvars
 		     pp-last-sexp
 		     lisp-indent-function))
-	(advice-remove sym 'namespace-aware))))
+	(advice-remove sym 'namespace-tools))))
 
   (defun activate ()
     "Activate advice and bind keys."
