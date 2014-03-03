@@ -353,10 +353,8 @@
   (defmacro advice* (&rest body)
     `(progn
        ,@(cl-loop for (name kind fun) in body
-		  collect `(progn
-			     (message "advice-add %s" ',name)
-			     (advice-add ',name ,kind (function ,fun)
-					 '((name . namespace-aware)))))))
+		  collect `(advice-add ',name ,kind (function ,fun)
+				       '((name . namespace-aware))))))
 
   (defun deactivate ()
     (interactive)
