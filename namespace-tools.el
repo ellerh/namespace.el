@@ -288,9 +288,9 @@
     (interactive (list (form-at-point 'sexp)))
     (pp (macroexpand-all (current-namespace) form)))
 
-  ;; The indendation code is copied from lisp-modes
+  ;; The indendation code is copied from lisp-mode's
   ;; lisp-indent-function and refactored a bit.  lookup-indent-method
-  ;; is the key bit that figures out what how to indend a particlar
+  ;; is the key bit that figures out how to indent a particular
   ;; symbol.
 
   (defvar calculate-lisp-indent-last-sexp)
