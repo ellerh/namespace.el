@@ -16,27 +16,27 @@
 # along with GNU Emacs.  If not, see <http://www.gnu.org/licenses/>.
 
 help:
-	@echo -e "\
+	@printf "\
 Main targets\n\
 all        -- compile namespace.el\n\
 check      -- run tests\n\
 clean      -- delete generated files\n\
 install    -- install ELPA package\n\
 uninstall  -- uninstall ELPA package\n\
-help       -- print this message"
+help       -- print this message\n"
 
 ELFILES := namespace.el cl-ns.el namespace-tools.el namespace-test.el
 
-ELCFILES := $(patsubst %.el,%.elc,${ELFILES})
+ELCFILES := $(ELFILES:.el=.elc)
 
-all: ${ELCFILES}
+all: $(ELCFILES)
 
 %.elc: %.el
 	emacs --batch -L . -f batch-byte-compile $<
 
 RUNTESTS = emacs --batch -L . -l $(1) -f ert-run-tests-batch-and-exit
 
-check: ${ELCFILES}
+check: $(ELCFILES)
 	$(call RUNTESTS,namespace-test.el)
 	$(call RUNTESTS,namespace-test.elc)
 
@@ -45,31 +45,31 @@ clean:
 	  -regex '.*\(\.elc\|\.tar\|-pkg\.el\)$$' \
 	  -exec rm -v {} \;
 
-PKGFILES := ${ELFILES} namespace-pkg.el README.org
+PKGFILES := $(ELFILES) namespace-pkg.el README.org
 
-VERSION = $(shell awk '/^;; Version: [0-9.]+/ { print $$3 }' namespace.el)
+VERSION := $(shell awk '/^;; Version: [0-9.]+/ { print $$3 }' namespace.el)
 
-TARDIR = namespace-${VERSION}
+TARDIR := namespace-$(VERSION)
 
-PKGTAR = ${TARDIR}.tar
+PKGTAR := $(TARDIR).tar
 
-${PKGTAR}: ${PKGFILES}
-	mkdir -p ${TARDIR}
-	cp ${PKGFILES} ${TARDIR}
-	tar -cvf $@ ${TARDIR}
-	rm -r ${TARDIR}
+$(PKGTAR): $(PKGFILES)
+	mkdir -p $(TARDIR)
+	cp $(PKGFILES) $(TARDIR)
+	tar -cvf $@ $(TARDIR)
+	rm -r $(TARDIR)
 
-DOCSTRING = Namespaces for Emacs Lisp
+DOCSTRING := Namespaces for Emacs Lisp
 
 namespace-pkg.el:
-	echo '(define-package "namespace" "${VERSION}" "${DOCSTRING}")' >$@
+	echo '(define-package "namespace" "$(VERSION)" "$(DOCSTRING)")' >$@
 
-.INTERMEDIATE: ${PKGTAR} namespace-pkg.el
+.INTERMEDIATE: $(PKGTAR) namespace-pkg.el
 
-install: ${PKGTAR}
-	emacs -batch -eval '(package-install-file "${PKGTAR}")'
+install: $(PKGTAR)
+	emacs -batch -eval '(package-install-file "$(PKGTAR)")'
 
 uninstall:
-	rm -vr ~/.emacs.d/elpa/namespace-${VERSION}
+	rm -vr ~/.emacs.d/elpa/namespace-$(VERSION)
 
 # Makefile ends here
