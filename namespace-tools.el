@@ -19,7 +19,10 @@
 
 ;;; Commentary:
 
-;; Namespace aware M-. command and related support code.
+;; Namespace aware M-., indentation, eldoc and similar commands for
+;; ELisp programming.  Proof of concept trying to show that many
+;; commands would only need minor adaptions to make them namespace
+;; aware.
 
 ;;; Code:
 

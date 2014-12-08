@@ -209,6 +209,20 @@
 
   )
 
+;;; difficult issue. temporarily disabled.
+;(define-namespace k
+;    ((:export f)
+;     (:import (cl (:only loop))))
+;
+;  (defmacro m (x)
+;    `(list . ,(loop repeat 10 collect x)))
+;
+;  (defun f (x)
+;    (m x))
+;
+;  )
+
+
 (ert-deftest test-a.0 ()
   (should (equal (a-a 1 2) '(a--b (a-a 2 1)))))
 

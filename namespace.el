@@ -72,6 +72,11 @@
   (inconsistent nil :type boolean)
   )
 
+;; Like check-type, but 'id and 'qsym can be use as aliases for
+;; 'string and 'namespace--qsym respectively.  E.g.
+;;   (namespace--ct (id var1) (fixnum var2))
+;; expands to:
+;;   (progn (check-type var1 string) (check-type var2 fixnum))
 (defmacro namespace--ct (&rest decls)
   `(progn
      ,@(cl-loop for decl in decls collect
@@ -318,6 +323,7 @@
 	       do (namespace--mark-inconsistent ns2)))))
 
 
+
 ;; symbol -> namespace
 (defvar namespace--table (make-hash-table))
 
@@ -340,6 +346,8 @@
 			 namespace--table nil t)))
 
 
+;;; Various helpers
+
 (defun namespace--stringify-names (names)
   (mapcar #'symbol-name names))
 
@@ -356,7 +364,10 @@
 (defun namespace--list-of-symbols-p (x)
   (and (namespace--proper-list-p x)
        (cl-every #'symbolp x)))
+
 
+;;; Validation (i.e. consistency checks on graph of namespace object).
+
 (defun namespace--validate-unique (ns)
   (let ((name (namespace-find-namespace (namespace--name ns))))
     (cl-assert (or (not name)
@@ -609,6 +620,8 @@
        (namespace--progn ,name . ,body))))
 
 
+;;; Expander for namespace body
+
 ;;;; warning about unused a seems like bug
 ;;(defun foo (x)
 ;;  (pcase x
@@ -634,6 +647,9 @@
     (cond (existing (namespace--qsym-to-csym (cdr existing)))
 	  (t (intern-soft name)))))
 
+
+
+;; a table of rewrite rules for things like defun, defmacro etc.
 (defvar namespace--rewriters (make-hash-table))
 
 (cl-defmacro namespace--define-rewriter (name (env form) &body body)
@@ -791,10 +807,11 @@
 	    )
 	  env))
 
-;; This does the same as te above macro but more efficiently.  The
-;; above version creates lots of macrolets which will be expanded in a
-;; recursive fashion that can overfow the stack quickly.  This version
-;; uses the stack space more efficiently.
+;; This does the same as the `namespace--macrolet' in the previous
+;; comment but more efficiently.  The above version creates lots of
+;; macrolets which will be expanded in a recursive fashion that can
+;; overflow the stack quickly.  This version uses the stack space more
+;; efficiently.
 (cl-defmacro namespace--macrolet (fsyms &body body &environment env)
   (declare (indent 1))
   (macroexpand-all `(progn . ,body)
