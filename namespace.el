@@ -641,11 +641,19 @@
 			(if (namespace--name-external-p ns name) '- '--)
 			name)))
 
+;; global aliases
+(defun namespace--resolve-global (sym)
+  (let ((f (symbol-function sym)))
+    (cond ((and f (symbolp f))
+	   (namespace--resolve-global f))
+	  (t sym))))
+
 (defun namespace-resolve (ns name)
   (namespace--ct (namespace ns) (string name))
   (let ((existing (namespace--lookup ns name)))
-    (cond (existing (namespace--qsym-to-csym (cdr existing)))
-	  (t (intern-soft name)))))
+    (namespace--resolve-global
+     (cond (existing (namespace--qsym-to-csym (cdr existing)))
+	   (t (intern-soft name))))))
 
 
 
@@ -664,17 +672,17 @@
 (defun namespace--constantly (value)
   (apply-partially #'identity value))
 
-(defun namespace--fsyms (ns)
+(defun namespace--aliases (ns)
   (cl-loop for qsym in (namespace--accessible-qsyms ns)
 	   collect (cons (intern (namespace--qsym-id qsym))
 			 qsym)))
 
 ;; Expand and rewrite FORMS.
-;; Return (FSYMS BODY) where FSYMS is an alist (SYMBOL . QSYM).
+;; Return (ALIASES BODY) where ALIASES is an alist (SYMBOL . QSYM).
 ;;
-;; FIXME: remove duplicates in FSYMS
+;; FIXME: remove duplicates in ALIASES
 (defun namespace--walk-toplevel (ns env forms)
-  (let ((fsyms (cons nil (namespace--fsyms ns)))
+  (let ((aliases (cons nil (namespace--aliases ns)))
 	(rbody '())
 	(env (cons (cons 'namespace--ns (namespace--constantly ns))
 		   env)))
@@ -685,9 +693,9 @@
 		(let rewrite (gethash op namespace--rewriters))
 		(guard rewrite))
 	   op
-	   (cl-destructuring-bind (fss rform env2 recursep)
+	   (cl-destructuring-bind (aliases2 rform env2 recursep)
 	       (funcall rewrite env form)
-	     (setcdr fsyms (append fss (cdr fsyms)))
+	     (setcdr aliases (append aliases2 (cdr aliases)))
 	     (setq env env2)
 	     (cond (recursep (push rform forms))
 		   (t (push rform rbody)))))
@@ -705,7 +713,7 @@
 		    (push expansion forms)))))
 	  (_
 	   (push form rbody)))))
-    (list (cdr fsyms)
+    (list (cdr aliases)
 	  (reverse rbody))))
 
 (defun namespace--add-internal (namespace names)
@@ -714,8 +722,8 @@
       (namespace--intern ns name)))
   (namespace--validate))
 
-(defun namespace--internal-fsyms (ns fsyms)
-  (cl-loop for (nil . qsym) in fsyms
+(defun namespace--internal-aliases (ns aliases)
+  (cl-loop for (nil . qsym) in aliases
 	   when (let ((name (namespace--qsym-id qsym))
 		      (ns2 (namespace--qsym-ns qsym)))
 		  (and (eq ns2 ns)
@@ -734,6 +742,7 @@
 	 `(symbol-function ',sym2))
 	(_ nil))
       (let ((cache (macroexpand '(namespace--fcache) env)))
+	(cl-assert (consp cache))
 	(cond ((eq (car cache) sym)
 	       (cdr cache))
 	      (t
@@ -777,25 +786,23 @@
   args
   (error "labels not supported inside namespace"))
 
-;;(cl-defmacro namespace--macrolet (fsyms &body body)
-;;  (declare (indent 1))
-;;  `(cl-macrolet ((namespace--fsyms () ',fsyms)
-;;		 (namespace--fcache () ',(cons nil nil))
-;;		 (function (sym &environment env)
-;;			   (namespace--function-expander sym env))
-;;		 ,@(cl-loop for (sym . csym) in fsyms
-;;			    collect `(,sym (&rest args)
-;;					   `(,',csym . ,args))))
-;;     . ,body))
+;; (cl-defmacro namespace--macrolet (aliases &body body &environment env)
+;;   (declare (indent 1))
+;;   (let ((env2 (namespace--macrolet-env aliases env)))
+;;     `(cl-macrolet (,@(cl-loop for (sym . fun) in env2
+;; 			      collect `(,sym (&rest args)
+;; 					     (apply ',fun args))))
+;;        . ,body)))
 
-(defun namespace--macrolet-env (fsyms env)
-  (append (cl-loop for (sym . csym) in fsyms
-		   collect `(,sym . (lambda (&rest args)
+(defun namespace--macrolet-env (aliases env)
+  (append (cl-loop for (new . old) in aliases
+		   collect `(,new . (lambda (&rest args)
 				      (declare (namespace--renamer))
-				      (cons (quote ,csym) args))))
-	  '((namespace--fsyms . (lambda () ',fsyms))
-	    (namespace--fcache . (lambda () ',(cons nil nil)))
-	    (function . (lambda (sym)
+				      (cons (quote ,old) args))))
+	  `((namespace--aliases . ,(lambda () aliases))
+	    (namespace--fcache . ,(let ((cache (cons nil nil)))
+				    (lambda () cache)))
+	    (function . (lambda (sym &optional env0)
 			  (declare (namespace--function-expander))
 			  (let ((env macroexpand-all-environment))
 			    (namespace--function-expander sym env))))
@@ -807,28 +814,35 @@
 	    )
 	  env))
 
-;; This does the same as the `namespace--macrolet' in the previous
-;; comment but more efficiently.  The above version creates lots of
-;; macrolets which will be expanded in a recursive fashion that can
-;; overflow the stack quickly.  This version uses the stack space more
-;; efficiently.
-(cl-defmacro namespace--macrolet (fsyms &body body &environment env)
+;; This does roughly the same as the `namespace--macrolet' in the
+;; previous comment but more efficiently.  The above version creates
+;; lots of macrolets which will be expanded in a recursive fashion
+;; that can overflow the stack quickly.  This version uses the stack
+;; space more efficiently.
+(cl-defmacro namespace--macrolet (aliases &body body &environment env)
   (declare (indent 1))
   (macroexpand-all `(progn . ,body)
-		   (namespace--macrolet-env fsyms env)))
+		   (namespace--macrolet-env aliases
+					    (or env
+						byte-compile-macro-environment)
+					    )))
 
-(defun namespace--fsyms-to-csyms (fsyms)
-  (cl-loop for (sym . qsym) in fsyms
-	   collect (cons sym (namespace--qsym-to-csym qsym))))
+(defun namespace--aliases-to-csyms (aliases)
+  (cl-loop for (sym . qsym) in aliases
+	   for csym = (namespace--qsym-to-csym qsym)
+	   for old = (namespace--resolve-global csym)
+	   unless (eq sym old) ; don't allow circular aliases
+	   collect (cons sym old)))
 
 (cl-defmacro namespace--progn (namespace &body body &environment env)
   (declare (indent 1))
   (let ((ns (namespace--find-namespace-or-lose namespace)))
-    (cl-destructuring-bind (fsyms body) (namespace--walk-toplevel ns env body)
+    (cl-destructuring-bind (aliases body) (namespace--walk-toplevel ns env
+								    body)
       `(progn
 	 (namespace--add-internal ',namespace
-				  ',(namespace--internal-fsyms ns fsyms))
-	 (namespace--macrolet ,(namespace--fsyms-to-csyms fsyms)
+				  ',(namespace--internal-aliases ns aliases))
+	 (namespace--macrolet ,(namespace--aliases-to-csyms aliases)
 	   . ,body)))))
 
 
@@ -863,8 +877,6 @@
 
 ;;; defmacro
 
-;; insert eval-and-compile because in (progn X) the compiler doesn't
-;; treat X as toplevel form even if the progn occurs at toplevel.
 (defun namespace--defmacro-like (env form)
   (let ((ns (funcall (cdr (assoc 'namespace--ns env)))))
     (pcase form
@@ -872,8 +884,7 @@
        (let* ((qsym (namespace--intern ns (symbol-name sym)))
 	      (csym (namespace--qsym-to-csym qsym)))
 	 (list `((,sym . ,qsym))
-	       `(eval-and-compile
-		  (,op ,csym . ,rest))
+	       `(,op ,csym . ,rest)
 	       (cons (cons sym `(lambda . ,rest)) ;; FIXME: closure
 		     env)
 	       nil)))
@@ -1001,8 +1012,8 @@
 
 
 (defun namespace--macroexpand-all-env (ns)
-  (let ((fsyms (namespace--fsyms ns)))
-    (namespace--macrolet-env (namespace--fsyms-to-csyms fsyms) nil)))
+  (let ((aliases (namespace--aliases ns)))
+    (namespace--macrolet-env (namespace--aliases-to-csyms aliases) nil)))
 
 (defun namespace-macroexpand-all (ns form)
   (macroexpand-all `(namespace--progn ,(namespace--name ns) ,form)))
