@@ -29,16 +29,18 @@ ELFILES := namespace.el cl-ns.el namespace-tools.el namespace-test.el
 
 ELCFILES := $(ELFILES:.el=.elc)
 
+EMACS := emacs
+
 all: $(ELCFILES)
 
 %.elc: %.el
-	emacs --batch -L . -f batch-byte-compile $<
+	$(EMACS) --batch -L .  -f batch-byte-compile $<
 
-RUNTESTS = emacs --batch -L . -l $(1) -f ert-run-tests-batch-and-exit
+RUNTESTS = $(EMACS) --batch -L . -l $(1) -f ert-run-tests-batch-and-exit
 
 check: $(ELCFILES)
-	$(call RUNTESTS,namespace-test.el)
 	$(call RUNTESTS,namespace-test.elc)
+	$(call RUNTESTS,namespace-test.el)
 
 clean:
 	find . -maxdepth 1 \
@@ -67,7 +69,7 @@ namespace-pkg.el:
 .INTERMEDIATE: $(PKGTAR) namespace-pkg.el
 
 install: $(PKGTAR)
-	emacs -batch -eval '(package-install-file "$(PKGTAR)")'
+	$(EMACS) -batch -eval '(package-install-file "$(PKGTAR)")'
 
 uninstall:
 	rm -vr ~/.emacs.d/elpa/namespace-$(VERSION)
