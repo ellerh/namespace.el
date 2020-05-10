@@ -209,18 +209,17 @@
 
   )
 
-;;; difficult issue. temporarily disabled.
-;(define-namespace k
-;    ((:export f)
-;     (:import (cl (:only loop))))
-;
-;  (defmacro m (x)
-;    `(list . ,(loop repeat 10 collect x)))
-;
-;  (defun f (x)
-;    (m x))
-;
-;  )
+(define-namespace k
+   ((:export f)
+    (:import (cl (:only loop))))
+
+ (defmacro m (x)
+   `(list . ,(loop repeat 10 collect x)))
+
+ (defun f (x)
+   (m x))
+
+ )
 
 
 (ert-deftest test-a.0 ()
@@ -288,7 +287,6 @@
   (should (e--c? (e-make-c :x 234 :y 456))))
 
 (ert-deftest test-e.9 ()
-  :expected-result :failed
   (should (cl-typep (e-make-c :x 234 :y 456) 'e-c)))
 
 (ert-deftest test-f.1 ()
@@ -377,6 +375,9 @@
 
 (ert-deftest test-j.3 ()
   (should (equal (j-h 1 2) '(2 . 1))))
+
+(ert-deftest test-k ()
+  (should (equal (k-f 234) '(234 234 234 234 234 234 234 234 234 234))))
 
 (define-namespace c1.a
   ((:export f)))
