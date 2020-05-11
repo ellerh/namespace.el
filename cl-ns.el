@@ -15,31 +15,12 @@
 (require 'cl-lib)
 (require 'namespace)
 
-(define-namespace cl-ns-aux
-    ((:export dolist dotimes))
-
-  ;; cl-dolist is defined in terms of dolist and that would lead to
-  ;; endless recursions.  Fix that my using namespace-global.  Real
-  ;; Common Lisp also inserts a TAGBODY around the body, but cl-dolist
-  ;; apparently does not.
-
-  (defmacro dolist (spec &rest body)
-    (declare (indent 1))
-    `(cl-block nil (namespace-global (dolist ,spec . ,body))))
-
-  (defmacro dotimes (spec &rest body)
-    (declare (indent 1))
-    `(cl-block nil (namespace-global (dotimes ,spec . ,body))))
-
-  )
-
 (define-namespace cl
-    ((:re-export cl-ns-aux)
-     (:re-export
+    ((:re-export
       (:global cl
 
-	       labels
-	       flet
+	       ;; labels
+	       ;; flet
 
 	       remprop
 	       getf
@@ -60,7 +41,7 @@
 	       every
 	       some
 	       mapcon
-	       mapcan
+	       ;;mapcan
 	       mapl
 	       maplist
 	       map
@@ -132,7 +113,7 @@
 	       shiftf
 	       remf
 	       psetf
-	       declare
+	       ;;declare
 	       the
 	       locally
 	       multiple-value-setq
@@ -157,7 +138,7 @@
 	       eval-when
 	       destructuring-bind
 	       gentemp
-	       gensym
+	       ;;gensym
 	       pairlis
 	       acons
 	       subst

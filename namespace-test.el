@@ -130,14 +130,14 @@
 
   (defun e (l)
     (let ((r ()))
-      (dolist (x l)
+      (cl-dolist (x l)
 	(push x r)
 	(when (equal x 3)
 	  (return r)))))
 
   (defun f (n)
     (let ((r 0))
-      (dotimes (i n)
+      (cl-dotimes (i n)
 	(incf r i)
 	(when (equal i 3)
 	  (return r)))))
@@ -157,28 +157,28 @@
   (defun a (n) (cons n "a"))
 
   (defun b (n)
-    (labels ((a (n) (if (= n 0) 1 (* n (a (1- n))))))
+    (cl-labels ((a (n) (if (= n 0) 1 (* n (a (1- n))))))
       (a n)))
 
   (defun c ()
-    (labels ((a (l)
+    (cl-labels ((a (l)
 		(cond ((null l) '())
 		      (t (append (a (cdr l)) (list (car l)))))))
       #'a))
 
   (defun d ()
-    (labels ((a (x) (cons "d.a" x)))
-      (labels ((a (x) (cons "d.a.a" x)))
+    (cl-labels ((a (x) (cons "d.a" x)))
+      (cl-labels ((a (x) (cons "d.a.a" x)))
 	#'a)))
 
   (defun e ()
-    (labels ((a (x) (cons "e.a" x)))
-      (labels ((b (x) (cons "e.a.b" x)))
+    (cl-labels ((a (x) (cons "e.a" x)))
+      (cl-labels ((b (x) (cons "e.a.b" x)))
 	#'a)))
 
   (defun f ()
-    (labels ((b (x) (cons "e.a" x)))
-      (labels ((b (x) (cons "e.a.b" x)))
+    (cl-labels ((b (x) (cons "e.a" x)))
+      (cl-labels ((b (x) (cons "e.a.b" x)))
 	#'a)))
 
   )
@@ -446,6 +446,24 @@
 			  ((:import c3.b))))
 	     (namespace-inconsistent (cdr e)))
 	   '(c3.b))))
+
+(ert-deftest test-conflict.6 ()
+  ;; 'cl-dotimes and 'dotimes are different and can't be imported in the
+  ;; same namespace.
+  (should (equal
+	   (condition-case e
+	       (eval '(define-namespace c6
+			((:import (:global cl dotimes)))))
+	     (namespace-import-conflict (cdr e)))
+	   '(c6 ((cl-dotimes . dotimes))))))
+
+(ert-deftest test-conflict.7 ()
+  ;; 'cl-caddr and 'caddr are (global) aliases so we should be able to
+  ;; import it.
+  (should (equal (eval '(define-namespace c7
+			    ((:import (:global cl cadddr)))
+			  (caddr '(a b c d))))
+		 'c)))
 
 (define-namespace c6.a
     ((:export f)))

@@ -186,7 +186,9 @@
 (defun namespace--conflicts-to-csyms (conflicts)
   (cl-loop for (q1 . q2) in conflicts
 	   collect (cons (namespace--qsym-to-csym q1)
-			 (namespace--qsym-to-csym q2))))
+			 (cl-etypecase q2
+			   (namespace--qsym (namespace--qsym-to-csym q2))
+			   (symbol q2)))))
 
 (define-error 'namespace-error "Namespace error")
 (define-error 'namespace-conflict "Name conflict" 'namespace-error)
@@ -266,6 +268,12 @@
 	     (namespace--table-map
 	      is
 	      (lambda (id qsym)
+		(let ((sym (intern id)))
+		  (when (and (fboundp sym)
+			     (not (eq (namespace--resolve-global
+				       (namespace--qsym-to-csym qsym))
+				      (namespace--resolve-global sym))))
+		    (push (cons qsym sym) conflicts)))
 		(pcase (cl-loop for is2 in rest
 				when (namespace--table-lookup is2 id)
 				return it)
