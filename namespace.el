@@ -747,6 +747,13 @@
 		 (setcdr cache form)
 		 form))))))
 
+(defun namespace--fsym-expander (sym)
+  (let* ((aliases (macroexpand '(namespace--aliases)
+			       macroexpand-all-environment))
+	 (cons (assoc sym aliases)))
+    (cond (cons `(quote ,(cdr cons)))
+	  (t (error "No alias for defined for: %s" sym)))))
+
 (defun namespace--macro-function (name)
   (pcase (symbol-function name)
     (`(macro . ,fun) fun)
@@ -807,7 +814,7 @@
 	    (flet . namespace--flet-expander)
 	    (cl-labels . namespace--cl-labels-expander)
 	    (cl-flet . namespace--cl-flet-expander)
-	    )
+	    (fsym . namespace--fsym-expander))
 	  env))
 
 ;; This does roughly the same as the `namespace--macrolet' in the

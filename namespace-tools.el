@@ -368,12 +368,12 @@
      (lisp-indent-function :around lisp-indent-function-advice))
     (setq eldoc-documentation-function #'eldoc)
     (let ((map emacs-lisp-mode-map))
-      (define-key map (kbd "M-.") 'namespace-tools-find-definition)
+      (define-key map (kbd "M-.") (fsym find-definition))
       (define-key map (kbd "M-,") 'pop-tag-mark)
-      (define-key map (kbd "C-c :") 'namespace-tools--eval-expression)
-      (define-key map (kbd "C-c m") 'namespace-tools--expand)
-      (define-key map (kbd "C-c M") 'namespace-tools--expand-all))
-    (add-hook 'emacs-lisp-mode-hook 'namespace-tools--elisp-mode-hook)
+      (define-key map (kbd "C-c :") (fsym eval-expression))
+      (define-key map (kbd "C-c m") (fsym expand))
+      (define-key map (kbd "C-c M") (fsym expand-all)))
+    (add-hook 'emacs-lisp-mode-hook (fsym elisp-mode-hook))
     ;; enable completion in all elisp buffers
     (dolist (b (buffer-list))
       (with-current-buffer b

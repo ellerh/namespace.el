@@ -209,6 +209,11 @@
 
  )
 
+(define-namespace l
+    ((:export f))
+  (defun f () (fsym f))
+  (defun g () (fsym g)))
+
 
 (ert-deftest test-a.0 ()
   (should (equal (a-a 1 2) '(a--b (a-a 2 1)))))
@@ -366,6 +371,12 @@
 
 (ert-deftest test-k ()
   (should (equal (k-f 234) '(234 234 234 234 234 234 234 234 234 234))))
+
+(ert-deftest test-l.1 ()
+  (should (equal (l-f) 'l-f)))
+
+(ert-deftest test-l.2 ()
+  (should (equal (l--g) 'l--g)))
 
 (define-namespace c1.a
   ((:export f)))
