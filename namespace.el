@@ -198,10 +198,13 @@
   'namespace-conflict)
 (define-error 'namespace-inconsistent "Namespace marked as inconsistent"
   'namespace-error)
+(define-error 'namespace-shadowing-error
+  "Global function shadowed by local function"
+  'namespace-conflict)
 
 (defun namespace--error (type &rest args)
   (cl-ecase type
-    (namespace-import-conflict
+    ((namespace-import-conflict namespace-shadowing-error)
      (cl-destructuring-bind (ns conflicts) args
        (signal type (list (namespace--name ns)
 			  (namespace--conflicts-to-csyms conflicts)))))
@@ -227,7 +230,11 @@
      (namespace-previously-exported
       (cl-destructuring-bind (ns qsyms) (cdr w)
 	(list (namespace--name ns)
-	      (mapcar #'namespace--qsym-to-csym qsyms)))))))
+	      (mapcar #'namespace--qsym-to-csym qsyms))))
+     (namespace-shadowing-error
+      (cl-destructuring-bind (ns cs) (cdr w)
+	(list (namespace--name ns)
+	      (namespace--conflicts-to-csyms cs)))))))
 
 (defun namespace--warning-to-string (w)
   (pcase w
@@ -244,6 +251,9 @@
     (`(namespace-previously-exported ,ns ,qsyms)
       (format "Namespace %s previously exported: %s"
 	      (namespace--name ns) (mapcar #'namespace--qsym-to-csym qsyms)))
+    (`(namespace-shadowing-error ,_ns ,cs)
+     (format "Global function shadowed by local function: %s"
+	     (namespace--conflicts-to-csyms cs)))
     (_ (error "no pcase match: %s" w))))
 
 (defun namespace--warn (type &rest args)
@@ -262,6 +272,11 @@
 	  (result (funcall fun)))
      (list (reverse warnings) result)))
 
+(defun namespace--shadows-global-p (sym qsym)
+  (and (fboundp sym)
+       (not (eq (namespace--resolve-global (namespace--qsym-to-csym qsym))
+		(namespace--resolve-global sym)))))
+
 (defun namespace--imports-conflicts (imports)
   (let ((conflicts '()))
     (cl-loop for (is . rest) on imports do
@@ -269,10 +284,7 @@
 	      is
 	      (lambda (id qsym)
 		(let ((sym (intern id)))
-		  (when (and (fboundp sym)
-			     (not (eq (namespace--resolve-global
-				       (namespace--qsym-to-csym qsym))
-				      (namespace--resolve-global sym))))
+		  (when (namespace--shadows-global-p sym qsym)
 		    (push (cons qsym sym) conflicts)))
 		(pcase (cl-loop for is2 in rest
 				when (namespace--table-lookup is2 id)
@@ -673,10 +685,16 @@
 	   collect (cons (intern (namespace--qsym-id qsym))
 			 qsym)))
 
+;; Remove duplicated aliases
+(defun namespace--remove-dups (aliases)
+  (let ((result ()))
+    (dolist (alias aliases)
+      (unless (assq (car alias) result)
+	(push alias result)))
+    (reverse result)))
+
 ;; Expand and rewrite FORMS.
 ;; Return (ALIASES BODY) where ALIASES is an alist (SYMBOL . QSYM).
-;;
-;; FIXME: remove duplicates in ALIASES
 (defun namespace--walk-toplevel (ns env forms)
   (let ((aliases (cons nil (namespace--aliases ns)))
 	(rbody '())
@@ -709,14 +727,22 @@
 		    (push expansion forms)))))
 	  (_
 	   (push form rbody)))))
-    (list (cdr aliases)
+    (list (namespace--remove-dups (cdr aliases))
 	  (reverse rbody))))
+
 
 (defun namespace--add-internal (namespace names)
   (let ((ns (namespace--find-namespace-or-lose namespace)))
     (dolist (name names)
-      (namespace--intern ns name)))
-  (namespace--validate))
+      (namespace--intern ns name))
+  (namespace--validate)))
+
+(defun namespace--check-shadowing (ns aliases)
+  (let ((conflicts (cl-loop for (sym . qsym) in aliases
+			    when (namespace--shadows-global-p sym qsym)
+			    collect (cons qsym sym))))
+    (when conflicts
+      (namespace--warn 'namespace-shadowing-error ns conflicts))))
 
 (defun namespace--internal-aliases (ns aliases)
   (cl-loop for (nil . qsym) in aliases
@@ -842,6 +868,7 @@
   (let ((ns (namespace--find-namespace-or-lose namespace)))
     (cl-destructuring-bind (aliases body) (namespace--walk-toplevel ns env
 								    body)
+      (namespace--check-shadowing ns aliases)
       `(progn
 	 (namespace--add-internal ',namespace
 				  ',(namespace--internal-aliases ns aliases))

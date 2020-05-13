@@ -476,6 +476,26 @@
 			  (caddr '(a b c d))))
 		 'c)))
 
+(ert-deftest test-conflict.8 ()
+  ;; Don't allow shodowing of global by internal definitions
+  (should (equal
+	   (namespace--collect-warnings
+	    (eval '(define-namespace c8
+		       ()
+		     (defun delete () 123))))
+	   '(((namespace-shadowing-error c8 ((c8--delete . delete))))
+	     c8--delete))))
+
+(ert-deftest test-conflict.9 ()
+  ;; Don't allow shodowing of global by exported definitions
+  (should (equal
+	   (namespace--collect-warnings
+	    (eval '(define-namespace c9
+		       ((:export delete))
+		     (defun delete () 123))))
+	   '(((namespace-shadowing-error c9 ((c9-delete . delete))))
+	     c9-delete))))
+
 (define-namespace c6.a
     ((:export f)))
 
